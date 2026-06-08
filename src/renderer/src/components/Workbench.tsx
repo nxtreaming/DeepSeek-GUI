@@ -18,6 +18,7 @@ import type { CoreRuntimeInfoJson, CoreRuntimeSkillJson } from '../agent/kun-con
 import { getProvider } from '../agent/registry'
 import { useChatStore } from '../store/chat-store'
 import { isClawThread } from '../store/chat-store-helpers'
+import { hasPendingRuntimeWork } from '../store/chat-store-runtime-helpers'
 import {
   extractLatestTurnAutoOpenDevPreviewUrls,
   extractLatestTurnDevPreviewUrls
@@ -972,27 +973,32 @@ export function Workbench(): ReactElement {
     const snapshot = useSddDraftStore.getState()
     const draft = snapshot.activeDraft
     if (!draft) return
+    if (sddUpgradeInFlightRef.current || snapshot.operationStatus === 'upgrading') return
     if (!snapshot.content.trim()) {
       useSddDraftStore.getState().setOperationStatus('error', t('sddEmptyDraftError'))
       return
     }
-    if (busy) {
+    const chatSnapshot = useChatStore.getState()
+    if (chatSnapshot.busy || chatSnapshot.blocks.some(hasPendingRuntimeWork)) {
       setError(t('composerQueuePlaceholder'))
       return
     }
-    if (runtimeConnection !== 'ready') {
+    if (chatSnapshot.runtimeConnection !== 'ready') {
       setError(t('runtimeActionNeedsConnection'))
       return
     }
+    sddUpgradeInFlightRef.current = true
     useSddDraftStore.getState().setOperationStatus('upgrading')
     const saved = await saveActiveSddDraftToDisk()
     if (!saved) {
+      sddUpgradeInFlightRef.current = false
       useSddDraftStore.getState().setOperationStatus('error', useSddDraftStore.getState().error)
       return
     }
 
     const threadId = await ensureSddAssistantThreadForDraft(draft)
     if (!threadId) {
+      sddUpgradeInFlightRef.current = false
       useSddDraftStore.getState().setOperationStatus('idle')
       return
     }
@@ -1003,6 +1009,7 @@ export function Workbench(): ReactElement {
       workspaceRoot: draft.workspaceRoot
     })
     if (collected.errors.length > 0) {
+      sddUpgradeInFlightRef.current = false
       useSddDraftStore.getState().setOperationStatus('error', collected.errors.join('\n'))
       return
     }
@@ -1025,6 +1032,7 @@ export function Workbench(): ReactElement {
         attachmentIds = uploaded.attachmentIds
         imageMode = 'attachments'
       } catch (error) {
+        sddUpgradeInFlightRef.current = false
         useSddDraftStore.getState().setOperationStatus(
           'error',
           error instanceof Error ? error.message : String(error)
@@ -1047,7 +1055,6 @@ export function Workbench(): ReactElement {
       images: imagesForPrompt,
       imageMode
     })
-    sddUpgradeInFlightRef.current = true
     sddUpgradeTargetRef.current = {
       planId,
       relativePath: planRelativePath,

@@ -332,7 +332,11 @@ export function createThreadActions(
     try {
       while (true) {
         const state = get()
-        const next = state.queuedMessages[0]
+        const queuedMessages = state.queuedMessages.filter((message) => !message.guiPlan)
+        if (queuedMessages.length !== state.queuedMessages.length) {
+          set({ queuedMessages })
+        }
+        const next = queuedMessages[0]
         if (!next || state.busy) return
         const started = await get().sendMessage(next.text, next.mode, { queued: next })
         if (!started) return
@@ -361,6 +365,10 @@ export function createThreadActions(
     }
     const hasPendingActiveTurn = get().blocks.some(hasPendingRuntimeWork)
     if (get().busy || hasPendingActiveTurn) {
+      if (overrides?.guiPlan) {
+        set({ error: i18n.t('common:composerQueuePlaceholder') })
+        return false
+      }
       const now = Date.now()
       const activeThreadId = get().activeThreadId
       const threadSnap = activeThreadId

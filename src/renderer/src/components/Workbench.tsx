@@ -43,7 +43,7 @@ import { composeWritePrompt } from '../write/quoted-selection'
 import { useWriteWorkspaceStore } from '../write/write-workspace-store'
 import { isWriteThreadId } from '../write/write-thread-registry'
 import { createSddDraft, forgetRememberedSddDraft, useSddDraftStore } from '../sdd/sdd-draft-store'
-import type { SddDraft } from '../sdd/sdd-draft-store'
+import type { SddDraft, SddDraftSaveStatus } from '../sdd/sdd-draft-store'
 import { saveActiveSddDraftToDisk } from '../sdd/sdd-draft-actions'
 import { restoreRememberedSddDraft } from '../sdd/sdd-draft-restore'
 import { composeSddAssistantPrompt } from '../sdd/sdd-assistant-prompt'
@@ -374,6 +374,8 @@ export function Workbench(): ReactElement {
   const draftByThread = useRef<Record<string, string>>({})
   const prevThreadId = useRef<string | null>(null)
   const inputRef = useRef('')
+  const dismissedSddDraftWorkspacesRef = useRef<Set<string>>(new Set())
+  const restoredSddDraftWorkspaceRef = useRef('')
   const sddUpgradeInFlightRef = useRef(false)
   const sddUpgradeTargetRef = useRef<PendingSddPlanTarget | null>(null)
   const timelineBlocks = blocks
@@ -858,16 +860,58 @@ export function Workbench(): ReactElement {
     return createSddAssistantThreadForDraft(draft)
   }
 
-  const openSddRequirementDraft = async (draft: SddDraft, content: string): Promise<boolean> => {
-    useSddDraftStore.getState().setActiveDraft(draft, content)
+  const openSddRequirementDraft = async (
+    draft: SddDraft,
+    content: string,
+    options: {
+      lastSavedContent?: string
+      saveStatus?: SddDraftSaveStatus
+      openAssistant?: boolean
+    } = {}
+  ): Promise<boolean> => {
+    useSddDraftStore.getState().setActiveDraft(draft, content, {
+      lastSavedContent: options.lastSavedContent,
+      saveStatus: options.saveStatus
+    })
+    dismissedSddDraftWorkspacesRef.current.delete(normalizeWorkspaceRoot(draft.workspaceRoot))
     setInput('')
     setMode('agent')
     setRoute('chat')
-    setRightSidebarWidth((width) => Math.max(width, 420))
-    const sddThreadId = await ensureSddAssistantThreadForDraft(draft)
-    if (!sddThreadId) return false
-    setRightPanelMode('sdd-ai')
+    if (options.openAssistant ?? runtimeConnection === 'ready') {
+      setRightSidebarWidth((width) => Math.max(width, 420))
+      const sddThreadId = await ensureSddAssistantThreadForDraft(draft)
+      if (sddThreadId) {
+        setRightPanelMode('sdd-ai')
+      } else {
+        setRightPanelMode(null)
+      }
+    } else {
+      setRightPanelMode(null)
+    }
     return true
+  }
+
+  const dismissActiveSddDraft = (options: { closeAssistant?: boolean } = {}): void => {
+    const draft = useSddDraftStore.getState().activeDraft
+    if (draft) {
+      dismissedSddDraftWorkspacesRef.current.add(normalizeWorkspaceRoot(draft.workspaceRoot))
+      void saveActiveSddDraftToDisk()
+      useSddDraftStore.getState().clearActiveDraft()
+    }
+    if (options.closeAssistant && rightPanelMode === 'sdd-ai') setRightPanelMode(null)
+  }
+
+  const toggleSddAssistantPanel = async (): Promise<void> => {
+    if (rightPanelMode === 'sdd-ai') {
+      setRightPanelMode(null)
+      return
+    }
+    const draft = useSddDraftStore.getState().activeDraft
+    if (!draft) return
+    setRightSidebarWidth((width) => Math.max(width, 420))
+    const threadId = await ensureSddAssistantThreadForDraft(draft)
+    if (!threadId) return
+    setRightPanelMode('sdd-ai')
   }
 
   const startNewSddRequirement = async (): Promise<void> => {
@@ -888,7 +932,10 @@ export function Workbench(): ReactElement {
       readWorkspaceFile: window.dsGui.readWorkspaceFile
     })
     if (restored.kind === 'restored') {
-      await openSddRequirementDraft(restored.draft, restored.content)
+      await openSddRequirementDraft(restored.draft, restored.content, {
+        lastSavedContent: restored.lastSavedContent,
+        saveStatus: restored.saveStatus
+      })
       return
     }
 
@@ -916,6 +963,39 @@ export function Workbench(): ReactElement {
     const activeDraft = { ...draft, absolutePath: result.path }
     await openSddRequirementDraft(activeDraft, initialContent)
   }
+
+  useEffect(() => {
+    if (activeSddDraft) return
+    const activeCodeWorkspace = activeThreadId
+      ? normalizeWorkspaceRoot(codeThreads.find((thread) => thread.id === activeThreadId)?.workspace ?? '')
+      : ''
+    const targetWorkspace = activeCodeWorkspace || normalizeWorkspaceRoot(workspaceRoot)
+    if (!targetWorkspace || dismissedSddDraftWorkspacesRef.current.has(targetWorkspace)) return
+    if (restoredSddDraftWorkspaceRef.current === targetWorkspace) return
+
+    let cancelled = false
+    restoredSddDraftWorkspaceRef.current = targetWorkspace
+    void restoreRememberedSddDraft({
+      workspaceRoot: targetWorkspace,
+      readWorkspaceFile: window.dsGui.readWorkspaceFile
+    }).then((restored) => {
+      if (cancelled || restored.kind !== 'restored') return
+      if (useSddDraftStore.getState().activeDraft) return
+      useSddDraftStore.getState().setActiveDraft(restored.draft, restored.content, {
+        lastSavedContent: restored.lastSavedContent,
+        saveStatus: restored.saveStatus
+      })
+      dismissedSddDraftWorkspacesRef.current.delete(targetWorkspace)
+      setInput('')
+      setMode('agent')
+      setRoute('chat')
+      setRightPanelMode(null)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeSddDraft, activeThreadId, codeThreads, setRightPanelMode, setRoute, workspaceRoot])
 
   const sendSddAssistantPrompt = async (value: string): Promise<void> => {
     const v = value.trim()
@@ -1290,30 +1370,21 @@ export function Workbench(): ReactElement {
   }
 
   const openThread = (id: string): void => {
-    if (activeSddDraft) {
-      void saveActiveSddDraftToDisk()
-      useSddDraftStore.getState().clearActiveDraft()
-    }
+    if (activeSddDraft) dismissActiveSddDraft({ closeAssistant: true })
     setConnectPhoneSidebarOpen(false)
     setRoute('chat')
     void selectThread(id)
   }
 
   const startNewChat = (): void => {
-    if (activeSddDraft) {
-      void saveActiveSddDraftToDisk()
-      useSddDraftStore.getState().clearActiveDraft()
-    }
+    if (activeSddDraft) dismissActiveSddDraft({ closeAssistant: true })
     setConnectPhoneSidebarOpen(false)
     setRoute('chat')
     void createThread()
   }
 
   const startNewChatInWorkspace = (workspaceRoot: string): void => {
-    if (activeSddDraft) {
-      void saveActiveSddDraftToDisk()
-      useSddDraftStore.getState().clearActiveDraft()
-    }
+    if (activeSddDraft) dismissActiveSddDraft({ closeAssistant: true })
     setConnectPhoneSidebarOpen(false)
     setRoute('chat')
     void createThread({ workspaceRoot })
@@ -1340,11 +1411,7 @@ export function Workbench(): ReactElement {
   }
 
   const toggleConnectPhone = (): void => {
-    if (activeSddDraft) {
-      void saveActiveSddDraftToDisk()
-      useSddDraftStore.getState().clearActiveDraft()
-      if (rightPanelMode === 'sdd-ai') setRightPanelMode(null)
-    }
+    if (activeSddDraft) dismissActiveSddDraft({ closeAssistant: true })
     openClaw()
     setConnectPhoneSidebarOpen((open) => !open)
   }
@@ -1620,13 +1687,9 @@ export function Workbench(): ReactElement {
               leftSidebarCollapsed={leftSidebarCollapsed}
               assistantOpen={rightPanelMode === 'sdd-ai'}
               onToggleLeftSidebar={toggleLeftSidebar}
-              onToggleAssistant={() => toggleRightPanelMode('sdd-ai')}
+              onToggleAssistant={() => void toggleSddAssistantPanel()}
               onNext={() => void handleSddNextStep()}
-              onClose={() => {
-                void saveActiveSddDraftToDisk()
-                useSddDraftStore.getState().clearActiveDraft()
-                if (rightPanelMode === 'sdd-ai') setRightPanelMode(null)
-              }}
+              onClose={() => dismissActiveSddDraft({ closeAssistant: true })}
               nextDisabled={busy || runtimeConnection !== 'ready' || sddDraftOperationStatus === 'upgrading'}
             />
           ) : (

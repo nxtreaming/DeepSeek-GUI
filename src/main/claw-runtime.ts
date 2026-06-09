@@ -925,7 +925,7 @@ export class ClawRuntime {
       await this.sendFeishuMessage(
         bridge,
         message.chatId,
-        { text: commandReply },
+        { markdown: commandReply },
         replyOptions,
         {
           purpose: 'im-command',
@@ -947,7 +947,7 @@ export class ClawRuntime {
       await this.sendFeishuMessage(
         bridge,
         message.chatId,
-        { text: taskCreation.confirmationText },
+        { markdown: taskCreation.confirmationText },
         { replyTo: message.messageId, replyInThread: Boolean(message.threadId) },
         {
           purpose: 'schedule-created',
@@ -962,7 +962,7 @@ export class ClawRuntime {
       await this.sendFeishuMessage(
         bridge,
         message.chatId,
-        { text: `Failed to create the scheduled task: ${taskCreation.message}` },
+        { markdown: `Failed to create the scheduled task: ${taskCreation.message}` },
         { replyTo: message.messageId, replyInThread: Boolean(message.threadId) },
         {
           purpose: 'schedule-error',
@@ -978,7 +978,7 @@ export class ClawRuntime {
         await this.sendFeishuMessage(
           bridge,
           message.chatId,
-          { text: 'Only text messages are supported right now.' },
+          { markdown: 'Only text messages are supported right now.' },
           { replyTo: message.messageId, replyInThread: Boolean(message.threadId) },
           {
             purpose: 'unsupported-message',
@@ -1020,7 +1020,7 @@ export class ClawRuntime {
           await this.sendFeishuMessage(
             bridge,
             message.chatId,
-            { text: replyTextForGeneratedFiles('', existingFiles) },
+            { markdown: replyTextForGeneratedFiles('', existingFiles) },
             replyOptions,
             {
               purpose: 'direct-existing-file-reply',
@@ -1054,7 +1054,7 @@ export class ClawRuntime {
         await this.sendFeishuMessage(
           bridge,
           message.chatId,
-          { text: `我找到了文件 ${existingFiles.map((file) => file.fileName).join(', ')}，但飞书附件上传失败：${failure}` },
+          { markdown: `我找到了文件 ${existingFiles.map((file) => file.fileName).join(', ')}，但飞书附件上传失败：${failure}` },
           replyOptions,
           {
             purpose: 'direct-existing-file-failed',
@@ -1072,6 +1072,34 @@ export class ClawRuntime {
         })
         return
       }
+    }
+
+    // Add a "in progress" emoji reaction on the user's inbound message
+    // immediately so they see feedback before the agent run completes
+    // (which can take seconds). The reaction is targeted at the user's
+    // message id (not a new bot message) and is left in place after the
+    // agent finishes as a "handled" marker.
+    //
+    // Emoji type selection: Feishu / Lark's `im.v1.messageReaction.create`
+    // endpoint accepts a closed set of `emoji_type` strings; the SDK does
+    // NOT validate them locally — invalid values are rejected by the API
+    // with `code 231001 "reaction type is invalid"`. Empirically verified:
+    //   - `'WORK'`  → REJECTED (production logs, code 231001) — never use
+    //   - `'OnIt'`  → CONFIRMED VALID — renders as 🫡 (salute face,
+    //                 internet-canonical "got it, doing it" signal;
+    //                 best match for the user-requested "在做了")
+    //   - `'SMILE'` → CONFIRMED VALID — fallback, renders as 🙂
+    //
+    // Failure is logged but NOT re-thrown — we never want a reaction
+    // failure to drop the user's message or abort the agent run.
+    try {
+      await bridge.addReaction(message.messageId, 'OnIt')
+    } catch (error) {
+      this.deps.logError('claw-feishu', 'Failed to add Feishu / Lark pending reaction; continuing with the agent run.', {
+        message: errorMessage(error),
+        chatId: message.chatId,
+        messageId: message.messageId
+      })
     }
 
     let result: ClawRunResult
@@ -1094,7 +1122,7 @@ export class ClawRuntime {
         await this.sendFeishuMessage(
           bridge,
           message.chatId,
-          { text: 'Sorry, I could not process your message right now.' },
+          { markdown: 'Sorry, I could not process your message right now.' },
           { replyTo: message.messageId, replyInThread: Boolean(message.threadId) },
           {
             purpose: 'processing-error',
@@ -1128,7 +1156,7 @@ export class ClawRuntime {
       await this.sendFeishuMessage(
         bridge,
         message.chatId,
-        { text: replyText },
+        { markdown: replyText },
         replyOptions,
         {
           purpose: 'agent-reply',
@@ -1167,7 +1195,7 @@ export class ClawRuntime {
         await this.sendFeishuMessage(
           bridge,
           message.chatId,
-          { text: `我找到了文件 ${filesToSend.map((file) => file.fileName).join(', ')}，但飞书附件上传失败：${delivery.failed[0]?.message || 'unknown upload error'}` },
+          { markdown: `我找到了文件 ${filesToSend.map((file) => file.fileName).join(', ')}，但飞书附件上传失败：${delivery.failed[0]?.message || 'unknown upload error'}` },
           replyOptions,
           {
             purpose: 'agent-file-failed',
@@ -1263,6 +1291,27 @@ export class ClawRuntime {
           this.deps.logError('claw-feishu', 'Feishu channel reconnected', {
             channelId: target.id
           })
+        })
+        // The Feishu / Lark App admin subscribes to `im.message.message_read_v1`
+        // in the developer console. The high-level `bridge.on(...)` API has no
+        // entry for read receipts in its `EventMap`, and the SDK's internal
+        // `EventDispatcher` does not pre-register a handler either — so the
+        // dispatcher emits a `no im.message.message_read_v1 handle` warn on
+        // every receipt. Register a no-op here to silence the warn until we
+        // have product behavior for read receipts.
+        //
+        // TODO: replace this no-op with a real handler once we decide what to
+        //       do with read receipts (e.g. track in chat store, update agent
+        //       state, drive read-driven follow-ups).
+        const dispatcher = (bridge as unknown as {
+          dispatcher?: {
+            register(handles: Record<string, (raw: unknown) => Promise<void> | void>): void
+          }
+        }).dispatcher
+        dispatcher?.register({
+          'im.message.message_read_v1': () => {
+            // intentionally empty — see TODO above
+          }
         })
         await bridge.connect()
         if (version !== this.feishuSyncVersion) {

@@ -109,7 +109,7 @@
   "workflowCron": "Cron 表达式",
   "workflowCronPlaceholder": "例如 0 9 * * 1-5",
   "workflowPrompt": "指令",
-  "workflowPromptPlaceholder": "描述你希望智能体执行的操作。用 {{text}} 引用上一步的输出。",
+  "workflowPromptPlaceholder": "描述你希望智能体执行的操作。用 {{token}} 引用上一步的输出。",
   "workflowModelSearch": "搜索模型…",
   "workflowModelUseCustom": "使用「{{model}}」",
   "workflowModelNone": "无可用模型 — 可输入自定义模型名",

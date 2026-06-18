@@ -109,7 +109,7 @@
   "workflowCron": "Cron expression",
   "workflowCronPlaceholder": "e.g. 0 9 * * 1-5",
   "workflowPrompt": "Prompt",
-  "workflowPromptPlaceholder": "Describe what the agent should do. Use {{text}} for the previous step's output.",
+  "workflowPromptPlaceholder": "Describe what the agent should do. Use {{token}} for the previous step's output.",
   "workflowModelSearch": "Search models…",
   "workflowModelUseCustom": "Use \"{{model}}\"",
   "workflowModelNone": "No models — type to use a custom one",

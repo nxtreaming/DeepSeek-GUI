@@ -229,7 +229,7 @@ export function NodeConfigPanel({ node, settings, lastResult, onChange, onDelete
               <textarea
                 className={`${INPUT_CLASS} min-h-[120px] resize-y`}
                 value={node.config.prompt}
-                placeholder={t('workflowPromptPlaceholder')}
+                placeholder={t('workflowPromptPlaceholder', { token: '{{text}}' })}
                 onChange={(event) =>
                   onChange({ ...node, config: { ...node.config, prompt: event.target.value } })
                 }

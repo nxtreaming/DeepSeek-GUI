@@ -19,6 +19,17 @@ import {
 
 export type CompactionMode = 'normal' | 'aggressive' | 'force'
 
+/**
+ * Provider `prompt_tokens` is trusted only while it stays within this multiple
+ * of our local estimate of the sent request. Beyond it the count is treated as
+ * a provider accounting artifact (e.g. MiniMax-M3 summing cumulative cache
+ * reads into prompt_tokens) and ignored in favour of the estimate. The factor
+ * is wide enough to absorb legitimate under-counting (image tool results,
+ * formatting/role tokens) while still catching the order-of-magnitude inflation
+ * that strands a thread at "100%".
+ */
+export const PROMPT_TOKEN_TRUST_FACTOR = 6
+
 export type CompactionPlan = {
   mode: CompactionMode
   keepRecent: number
@@ -94,7 +105,16 @@ export class ContextCompactor {
     // `promptTokens` still wins via the Math.max below when present.
     const overheadTokens = Math.max(0, Math.floor(options?.overheadTokens ?? 0))
     const estimatedTokens = this.estimate(compactableItems) + overheadTokens
-    const promptTokens = typeof options?.promptTokens === 'number' ? options.promptTokens : undefined
+    const reportedPromptTokens = typeof options?.promptTokens === 'number' ? options.promptTokens : undefined
+    // Some providers over-report prompt_tokens by folding cumulative cache
+    // reads into the per-request count. MiniMax-M3 was observed reporting up to
+    // ~25x the real prompt size (prompt_cache_hit_tokens alone exceeded the
+    // entire stored conversation, which is physically impossible). Trusting that
+    // number pins the gauge at 100% and makes compaction fire pointlessly on a
+    // context that is actually tiny. A request cannot really exceed our own
+    // estimate of what we sent by a wide margin, so when the reported count
+    // blows past it we distrust the provider and fall back to the estimate.
+    const promptTokens = trustworthyPromptTokens(reportedPromptTokens, estimatedTokens, options?.model)
     const tokens = Math.max(estimatedTokens, promptTokens ?? 0)
     if (tokens < thresholds.softThreshold) return null
     const aggressiveThreshold = aggressiveCompactionThreshold(thresholds)
@@ -217,6 +237,40 @@ export function trimTrailingToolCalls(history: TurnItem[]): TurnItem[] {
 function aggressiveCompactionThreshold(thresholds: ModelContextThresholds): number {
   const span = Math.max(0, thresholds.hardThreshold - thresholds.softThreshold)
   return thresholds.softThreshold + Math.floor(span * 0.6)
+}
+
+const inflationWarnedAt = new Map<string, number>()
+const INFLATION_WARN_INTERVAL_MS = 60_000
+
+/**
+ * Returns the provider `prompt_tokens` when it is consistent with our local
+ * estimate, or `undefined` when it exceeds it by more than
+ * `PROMPT_TOKEN_TRUST_FACTOR` (treated as a provider accounting artifact and
+ * dropped so the estimate drives the decision instead).
+ */
+function trustworthyPromptTokens(
+  reported: number | undefined,
+  estimate: number,
+  model?: string
+): number | undefined {
+  if (reported === undefined) return undefined
+  if (estimate > 0 && reported > estimate * PROMPT_TOKEN_TRUST_FACTOR) {
+    warnInflatedPromptTokens(reported, estimate, model)
+    return undefined
+  }
+  return reported
+}
+
+function warnInflatedPromptTokens(reported: number, estimate: number, model?: string): void {
+  const key = model || 'unknown'
+  const now = Date.now()
+  if (now - (inflationWarnedAt.get(key) ?? 0) < INFLATION_WARN_INTERVAL_MS) return
+  inflationWarnedAt.set(key, now)
+  console.warn(
+    `[kun] ignoring inflated prompt_tokens for model "${key}": reported ${reported} vs local estimate ${estimate} ` +
+      `(>${PROMPT_TOKEN_TRUST_FACTOR}x). Falling back to the estimate for context/compaction; the provider is likely ` +
+      `summing cumulative cache reads into prompt_tokens.`
+  )
 }
 
 function normalizeFrozenMessageCount(value: number | undefined, historyLength: number): number {

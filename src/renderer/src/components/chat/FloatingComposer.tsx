@@ -636,12 +636,15 @@ export function FloatingComposer({
   const measuredTotalRef = useRef<number | null>(null)
   if (!busy) measuredTotalRef.current = liveMeasuredTotal
   const measuredContextTotal = busy ? measuredTotalRef.current : liveMeasuredTotal
-  // The message estimate only feeds the per-category split (popover) or the
-  // no-measured-total fallback. Never subscribe to `blocks` while streaming with
-  // the popover closed — blocks churn on every delta and re-render the whole
-  // composer. Freeze the last estimate in a ref instead.
+  // The message estimate feeds the per-category split (popover), the
+  // no-measured-total fallback, AND the sanity check that rejects an inflated
+  // measured total (some providers over-report prompt_tokens — see
+  // buildContextCapacity). We therefore need it whenever the gauge is idle, not
+  // just when the popover is open. Never subscribe to `blocks` while streaming
+  // with the popover closed — blocks churn on every delta and re-render the
+  // whole composer; the frozen ref is good enough for that transient window.
   const needMessageEstimate =
-    canShowContextCapacity && (contextCapacityOpen || measuredContextTotal == null)
+    canShowContextCapacity && (contextCapacityOpen || measuredContextTotal == null || !busy)
   const subscribeContextBlocks = needMessageEstimate && (contextCapacityOpen || !busy)
   const contextBlocks = useChatStore((s) => (subscribeContextBlocks ? s.blocks : EMPTY_CONTEXT_BLOCKS))
   const conversationTokensRef = useRef(0)

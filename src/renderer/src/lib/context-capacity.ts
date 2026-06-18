@@ -64,6 +64,16 @@ export const TOKENS_PER_SKILL = 45
 export const SYSTEM_PROMPT_BASE_TOKENS = 1600
 export const OTHER_BASE_TOKENS = 220
 
+// Guard against providers that over-report prompt_tokens by folding cumulative
+// cache reads into the per-request count. MiniMax-M3 was observed reporting
+// ~1.2M prompt tokens for a thread whose real content was ~33k (its reported
+// cache-hit tokens alone exceeded the entire conversation, which is impossible),
+// pinning this gauge at 100%. When the measured total dwarfs our own estimate of
+// the whole prompt by more than this factor, treat it as unreliable and fall
+// back to the estimate. Wide enough to absorb honest under-counting (images,
+// formatting) while still catching order-of-magnitude inflation.
+export const PROMPT_TOKEN_TRUST_FACTOR = 6
+
 const CJK_TOKENS_PER_CHAR = 0.9
 const ASCII_CHARS_PER_TOKEN = 4
 
@@ -159,8 +169,18 @@ export function buildContextCapacity(input: ContextCapacityInput): ContextCapaci
   const otherEstimate = OTHER_BASE_TOKENS
   const prefixEstimate = toolsEstimate + skillsEstimate + systemEstimate + otherEstimate
 
-  const hasMeasuredTotal =
+  // The measured prompt-token total is the source of truth only while it stays
+  // within a sane multiple of what we estimate the whole prompt to be. Beyond
+  // that it is a provider accounting artifact (see PROMPT_TOKEN_TRUST_FACTOR);
+  // fall back to the estimate so the gauge reflects the real, much smaller
+  // context rather than being stranded at 100%.
+  const localEstimate = messageEstimate + prefixEstimate
+  const measuredTotal =
     typeof input.lastTurnInputTokens === 'number' && input.lastTurnInputTokens > 0
+      ? input.lastTurnInputTokens
+      : 0
+  const hasMeasuredTotal =
+    measuredTotal > 0 && measuredTotal <= localEstimate * PROMPT_TOKEN_TRUST_FACTOR
 
   let tools: number
   let system: number
@@ -172,7 +192,7 @@ export function buildContextCapacity(input: ContextCapacityInput): ContextCapaci
   if (hasMeasuredTotal) {
     // Real total; estimate the breakdown but scale the prefix so the parts add
     // up to the measured occupancy exactly.
-    usedTokens = clamp(Math.round(input.lastTurnInputTokens as number), 0, windowTokens)
+    usedTokens = clamp(Math.round(measuredTotal), 0, windowTokens)
     messages = clamp(messageEstimate, 0, usedTokens)
     const prefixActual = Math.max(0, usedTokens - messages)
     const scale = prefixEstimate > 0 ? prefixActual / prefixEstimate : 0

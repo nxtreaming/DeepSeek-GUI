@@ -46,14 +46,46 @@ describe('buildContextCapacity', () => {
   it('clamps a measured total that exceeds the window', () => {
     const cap = buildContextCapacity({
       windowTokens: 100_000,
+      // A conversation that genuinely fills the window; the measured total is a
+      // little over it (overhead/formatting) and must clamp. messageTokens keeps
+      // the measured total within the trust factor so it is not mistaken for
+      // provider inflation.
       lastTurnInputTokens: 150_000,
-      messageTokens: 0,
+      messageTokens: 90_000,
       toolCount: 10,
       skillCount: 0
     })
+    expect(cap.hasMeasuredTotal).toBe(true)
     expect(cap.usedTokens).toBe(100_000)
     expect(cap.freeTokens).toBe(0)
     expect(cap.usedRatio).toBe(1)
+  })
+
+  it('rejects a measured total that dwarfs the local estimate (provider inflation)', () => {
+    // Regression: MiniMax-M3 reported ~1.2M prompt tokens for a thread whose real
+    // content was ~33k, pinning the gauge at 100%. The measured total must be
+    // ignored in favour of the estimate so the gauge shows the true ~3%.
+    const cap = buildContextCapacity({
+      windowTokens: 1_000_000,
+      lastTurnInputTokens: 1_246_505,
+      messageTokens: 33_000,
+      toolCount: 20,
+      skillCount: 2
+    })
+    expect(cap.hasMeasuredTotal).toBe(false)
+    // Falls back to the estimate (conversation + prefix), nowhere near 100%.
+    expect(cap.usedTokens).toBeLessThan(120_000)
+    expect(cap.usedRatio).toBeLessThan(0.15)
+    // A plausible measured total (within the trust factor) is still honoured.
+    const trusted = buildContextCapacity({
+      windowTokens: 1_000_000,
+      lastTurnInputTokens: 120_000,
+      messageTokens: 33_000,
+      toolCount: 20,
+      skillCount: 2
+    })
+    expect(trusted.hasMeasuredTotal).toBe(true)
+    expect(trusted.usedTokens).toBe(120_000)
   })
 
   it('falls back to a pure estimate when there is no measured turn', () => {

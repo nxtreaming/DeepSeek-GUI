@@ -1931,7 +1931,29 @@ describe('AgentLoop', () => {
     ]
 
     expect(compactor.shouldCompact(tinyHistory)).toBe(false)
-    expect(compactor.shouldCompact(tinyHistory, { promptTokens: 120 })).toBe(true)
+    // A reported count within PROMPT_TOKEN_TRUST_FACTOR of the estimate (here
+    // the per-request system/tool overhead) is honoured and drives compaction.
+    expect(compactor.shouldCompact(tinyHistory, { promptTokens: 120, overheadTokens: 40 })).toBe(true)
+  })
+
+  it('ignores prompt tokens inflated far beyond the local estimate', () => {
+    // Regression: MiniMax-M3 folds cumulative cache reads into prompt_tokens and
+    // reported ~1.2M for a thread whose real content was ~33k, stranding it at
+    // "100%" and firing compaction that folded almost nothing. An implausibly
+    // large reported count must be ignored in favour of the local estimate.
+    const compactor = new ContextCompactor({ softThreshold: 100, hardThreshold: 200 })
+    const history = [
+      makeUserItem({ id: 'h', turnId: 'turn_1', threadId: 'thr_1', text: 'x'.repeat(360) })
+    ]
+
+    // ~90 estimated tokens of real content, below the soft threshold.
+    expect(compactor.shouldCompact(history)).toBe(false)
+    // A plausible provider count (within the trust factor) still triggers.
+    expect(compactor.shouldCompact(history, { promptTokens: 300 })).toBe(true)
+    // An order-of-magnitude-inflated count is dropped; the estimate wins, so a
+    // genuinely small thread is not pinned at the threshold compacting nothing.
+    expect(compactor.shouldCompact(history, { promptTokens: 1_000_000 })).toBe(false)
+    expect(compactor.planCompaction(history, { promptTokens: 1_000_000 })).toBeNull()
   })
 
   it('adds per-request overhead to the estimate-only compaction trigger', () => {
@@ -1966,15 +1988,17 @@ describe('AgentLoop', () => {
       })
     ]
 
-    expect(compactor.planCompaction(tinyHistory, { promptTokens: 120 })).toMatchObject({
+    // overheadTokens keeps the reported counts within the trust factor of the
+    // estimate (mirroring the real per-request system/tool floor).
+    expect(compactor.planCompaction(tinyHistory, { promptTokens: 120, overheadTokens: 40 })).toMatchObject({
       mode: 'normal',
       keepRecent: 4
     })
-    expect(compactor.planCompaction(tinyHistory, { promptTokens: 160 })).toMatchObject({
+    expect(compactor.planCompaction(tinyHistory, { promptTokens: 160, overheadTokens: 40 })).toMatchObject({
       mode: 'aggressive',
       keepRecent: 2
     })
-    expect(compactor.planCompaction(tinyHistory, { promptTokens: 220 })).toMatchObject({
+    expect(compactor.planCompaction(tinyHistory, { promptTokens: 220, overheadTokens: 40 })).toMatchObject({
       mode: 'force',
       keepRecent: 1
     })

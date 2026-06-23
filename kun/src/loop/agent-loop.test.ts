@@ -149,6 +149,51 @@ describe('resolvePlanModeToolSpecs', () => {
     expect(names).not.toContain('write')
     expect(names).not.toContain('bash')
   })
+
+  const WITH_INPUT_TOOLS: ModelToolSpec[] = [
+    spec('read'),
+    spec('write'),
+    spec('create_plan'),
+    spec('user_input'),
+    spec('request_user_input')
+  ]
+
+  it('step 0: allows the structured user-input tools (so plan turns can ask)', () => {
+    const result = resolvePlanModeToolSpecs(WITH_INPUT_TOOLS, {
+      planTurnActive: true,
+      createPlanSatisfied: false,
+      stepIndex: 0,
+      readOnlyToolNames: READ_ONLY_TOOLS
+    })
+    const names = result.map((t) => t.name)
+    expect(names).toContain('user_input')
+    expect(names).toContain('request_user_input')
+    expect(names).toContain('create_plan')
+    expect(names).not.toContain('write')
+  })
+
+  it('step > 0: drops the user-input tools, leaving only create_plan', () => {
+    const result = resolvePlanModeToolSpecs(WITH_INPUT_TOOLS, {
+      planTurnActive: true,
+      createPlanSatisfied: false,
+      stepIndex: 1,
+      readOnlyToolNames: READ_ONLY_TOOLS
+    })
+    expect(result.map((t) => t.name)).toEqual(['create_plan'])
+  })
+
+  it('custom interactiveToolNames overrides the default user-input set', () => {
+    const result = resolvePlanModeToolSpecs(WITH_INPUT_TOOLS, {
+      planTurnActive: true,
+      createPlanSatisfied: false,
+      stepIndex: 0,
+      readOnlyToolNames: READ_ONLY_TOOLS,
+      interactiveToolNames: new Set(['user_input'])
+    })
+    const names = result.map((t) => t.name)
+    expect(names).toContain('user_input')
+    expect(names).not.toContain('request_user_input')
+  })
 })
 
 describe('buildRuntimeContextInstruction', () => {

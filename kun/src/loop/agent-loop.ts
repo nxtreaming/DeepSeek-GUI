@@ -190,7 +190,7 @@ export const PLAN_MODE_INSTRUCTION = [
   'You are in Plan mode.',
   'Investigate the task first using read-only tools: prefer `read`, `grep`, `find`, and `ls` to gather the facts you need.',
   'Do NOT modify project files, apply edits, run shell commands, or run mutating commands in this mode.',
-  'If the request is ambiguous or hinges on a decision only the user can make, ask one concise round of clarifying questions and stop: end your turn with the question(s) and wait for the answer. Do NOT call `create_plan` yet — a set of options the user still has to choose between is not a plan.',
+  'If the request is ambiguous or hinges on a decision only the user can make, ask before planning: prefer the `user_input` tool to ask one concise round of clarifying questions (offer concrete options when there are any), then use the answer to write the plan in the same turn. If that tool is not available, end your turn with the question(s) in prose and wait for the answer. Either way, do NOT call `create_plan` until the ambiguity is resolved — a set of options the user still has to choose between is not a plan.',
   'When you understand the task well enough, call the `create_plan` tool to save a complete implementation plan as Markdown.',
   'Use `operation: "draft"` for the first plan, and `operation: "refine"` when revising an existing plan; you may call `create_plan` multiple times as the plan evolves.',
   'Write concrete, actionable steps rather than vague intentions, and structure the saved Markdown with `##` section headings (e.g. Summary, Steps, Tests, Risks).',
@@ -212,13 +212,21 @@ const PLAN_READ_ONLY_TOOL_NAMES = new Set([
   'web_fetch'
 ])
 
+/** Interactive tools allowed during the investigation phase (step 0) of a
+ * Plan-mode turn so the model can ask the user a structured clarifying
+ * question (with options) and continue to `create_plan` in the same turn
+ * instead of stopping with a prose question. Only effective on GUI turns:
+ * these tools advertise off `awaitUserInput`, so IM/headless plan turns never
+ * surface them and the prose-and-stop fallback applies there. */
+const PLAN_INTERACTIVE_TOOL_NAMES = new Set(['user_input', 'request_user_input'])
+
 /**
  * Resolve the tool list for a Plan-mode turn step. Extracted as a pure
  * function so the behaviour can be unit-tested without spinning up the
  * full agent loop.
  *
  * - Not plan-active or plan already satisfied → pass through unchanged.
- * - Step 0 (investigation): read-only tools + create_plan.
+ * - Step 0 (investigation): read-only + interactive (user_input) tools + create_plan.
  * - Step > 0 (must produce plan): only create_plan.
  */
 export function resolvePlanModeToolSpecs(
@@ -228,14 +236,18 @@ export function resolvePlanModeToolSpecs(
     createPlanSatisfied: boolean
     stepIndex: number
     readOnlyToolNames?: ReadonlySet<string>
+    interactiveToolNames?: ReadonlySet<string>
     planToolName?: string
   }
 ): ModelToolSpec[] {
   if (!options.planTurnActive || options.createPlanSatisfied) return toolSpecs
   const readOnly = options.readOnlyToolNames ?? PLAN_READ_ONLY_TOOL_NAMES
+  const interactive = options.interactiveToolNames ?? PLAN_INTERACTIVE_TOOL_NAMES
   const planTool = options.planToolName ?? CREATE_PLAN_TOOL_NAME
   return options.stepIndex === 0
-    ? toolSpecs.filter((tool) => tool.name === planTool || readOnly.has(tool.name))
+    ? toolSpecs.filter(
+        (tool) => tool.name === planTool || readOnly.has(tool.name) || interactive.has(tool.name)
+      )
     : toolSpecs.filter((tool) => tool.name === planTool)
 }
 

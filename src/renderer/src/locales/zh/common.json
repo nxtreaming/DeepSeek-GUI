@@ -1477,6 +1477,8 @@
   "gitCreateBranch": "创建分支…",
   "gitCreateNamedBranch": "创建并切换到 {{branch}}",
   "gitSwitchToNamedBranch": "切换到 {{branch}}",
+  "gitCheckedOutInWorktree": "已在其他工作树检出",
+  "gitOpenExistingWorktree": "打开 {{branch}} 所在的工作树",
   "gitOpenBranchWorktree": "在 worktree 中打开 {{branch}}",
   "gitNewBranchWorktree": "为新分支 {{branch}} 创建 worktree",
   "gitCheckoutNamedBranchWorktree": "从 {{branch}} 创建 worktree",

@@ -1477,6 +1477,8 @@
   "gitCreateBranch": "Create branch…",
   "gitCreateNamedBranch": "Create and switch to {{branch}}",
   "gitSwitchToNamedBranch": "Switch to {{branch}}",
+  "gitCheckedOutInWorktree": "Checked out in another worktree",
+  "gitOpenExistingWorktree": "Open the worktree that has {{branch}}",
   "gitOpenBranchWorktree": "Open {{branch}} in a worktree",
   "gitNewBranchWorktree": "Create worktree for new branch {{branch}}",
   "gitCheckoutNamedBranchWorktree": "Create worktree from {{branch}}",

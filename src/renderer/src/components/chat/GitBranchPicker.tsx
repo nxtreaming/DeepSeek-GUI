@@ -2,10 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import { createPortal } from 'react-dom'
 import { AlertCircle, Check, ChevronDown, GitBranch, GitFork, Loader2, Plus, Search } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import type { GitBranchesResult } from '@shared/git-branches'
+import type { GitBranchesResult, GitBranchRow } from '@shared/git-branches'
 import { getProvider } from '../../agent/registry'
 import { middleEllipsize } from '../../lib/middle-ellipsize'
-import { markThreadWorktree, saveThreadWorktreeRegistry } from '../../lib/thread-worktree-registry'
+import {
+  forgetThreadWorktree,
+  markThreadWorktree,
+  readThreadWorktreeRegistry,
+  saveThreadWorktreeRegistry
+} from '../../lib/thread-worktree-registry'
 import { useChatStore } from '../../store/chat-store'
 import { rememberCodeWorkspaceRoots } from '../../store/chat-store-helpers'
 
@@ -103,7 +108,9 @@ export function GitBranchPicker({ workspaceRoot }: Props): ReactElement | null {
   const trimmedQuery = query.trim()
   const exactBranchExists = branches.some((branch) => branch.name === trimmedQuery)
   const canCreate = trimmedQuery.length > 0 && !exactBranchExists
-  const switchTarget = exactBranchExists ? trimmedQuery : ''
+  const switchTargetRow = exactBranchExists
+    ? branches.find((branch) => branch.name === trimmedQuery) ?? null
+    : null
   const currentBranch = result?.ok ? result.currentBranch : null
   const label = currentBranch || (result?.ok ? t('gitDetached') : t('gitBranchUnavailable'))
   const footerBranchLabel = middleEllipsize(trimmedQuery, BRANCH_FOOTER_LABEL_MAX_LENGTH)
@@ -167,6 +174,57 @@ export function GitBranchPicker({ workspaceRoot }: Props): ReactElement | null {
     } finally {
       setActingBranch(null)
       setActingKind(null)
+    }
+  }
+
+  // A branch already checked out in another worktree can't be switched to in
+  // place (git forbids the same branch in two worktrees). Navigate the active
+  // conversation to that checkout instead of running a doomed `git switch`.
+  const navigateToWorktree = async (branch: GitBranchRow): Promise<void> => {
+    const worktreePath = branch.worktreePath
+    if (!worktreePath) return
+    const activeThreadId = useChatStore.getState().activeThreadId
+    if (!activeThreadId) return
+    setActingBranch(branch.name)
+    setActingKind('switch')
+    setError(null)
+    try {
+      const provider = getProvider()
+      if (typeof provider.updateThreadWorkspace === 'function') {
+        await provider.updateThreadWorkspace(activeThreadId, worktreePath)
+      }
+      const projectPath = result?.ok ? result.primaryRepositoryRoot : worktreePath
+      const registry = readThreadWorktreeRegistry()
+      saveThreadWorktreeRegistry(
+        branch.worktreePrimary
+          ? forgetThreadWorktree(activeThreadId, registry)
+          : markThreadWorktree(
+              activeThreadId,
+              { projectPath, worktreePath, branch: branch.name, createdAt: new Date().toISOString() },
+              registry
+            )
+      )
+      useChatStore.setState((state) => ({
+        codeWorkspaceRoots: rememberCodeWorkspaceRoots(state.codeWorkspaceRoots, [worktreePath]),
+        threads: state.threads.map((thread) =>
+          thread.id === activeThreadId ? { ...thread, workspace: worktreePath } : thread
+        )
+      }))
+      setOpen(false)
+      setQuery('')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setActingBranch(null)
+      setActingKind(null)
+    }
+  }
+
+  const selectBranch = (branch: GitBranchRow): void => {
+    if (branch.worktreePath) {
+      void navigateToWorktree(branch)
+    } else {
+      void switchBranch(branch.name)
     }
   }
 
@@ -284,9 +342,9 @@ export function GitBranchPicker({ workspaceRoot }: Props): ReactElement | null {
                   if (canCreate) {
                     e.preventDefault()
                     void createAndSwitchBranch()
-                  } else if (switchTarget) {
+                  } else if (switchTargetRow) {
                     e.preventDefault()
-                    void switchBranch(switchTarget)
+                    selectBranch(switchTargetRow)
                   }
                 }
               }}
@@ -324,10 +382,22 @@ export function GitBranchPicker({ workspaceRoot }: Props): ReactElement | null {
                   <button
                     type="button"
                     className="flex min-w-0 flex-1 items-start gap-3 rounded-lg px-1 py-2.5 text-left text-ds-ink"
-                    onClick={() => void switchBranch(branch.name)}
+                    onClick={() => selectBranch(branch)}
                     disabled={actingBranch != null || branch.current}
-                    aria-label={t('gitSwitchToNamedBranch', { branch: branch.name })}
-                    onPointerEnter={(event) => showTooltip(branch.name, event.clientX, event.clientY)}
+                    aria-label={
+                      branch.worktreePath
+                        ? t('gitOpenExistingWorktree', { branch: branch.name })
+                        : t('gitSwitchToNamedBranch', { branch: branch.name })
+                    }
+                    onPointerEnter={(event) =>
+                      showTooltip(
+                        branch.worktreePath
+                          ? t('gitOpenExistingWorktree', { branch: branch.name })
+                          : branch.name,
+                        event.clientX,
+                        event.clientY
+                      )
+                    }
                     onPointerMove={(event) => moveTooltip(event.clientX, event.clientY)}
                     onPointerLeave={hideTooltip}
                     onPointerCancel={hideTooltip}
@@ -340,6 +410,10 @@ export function GitBranchPicker({ workspaceRoot }: Props): ReactElement | null {
                       {branch.current && result?.ok && result.dirtyCount > 0 ? (
                         <span className="mt-0.5 block text-[12px] text-ds-faint">
                           {t('gitDirtyFiles', { count: result.dirtyCount })}
+                        </span>
+                      ) : branch.worktreePath ? (
+                        <span className="mt-0.5 block truncate text-[12px] text-ds-faint">
+                          {t('gitCheckedOutInWorktree')}
                         </span>
                       ) : null}
                     </span>

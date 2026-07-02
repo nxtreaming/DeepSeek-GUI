@@ -7,6 +7,7 @@ import {
   htmlFrameOverlayPointerEvents,
   htmlFrameShouldSuppressDocumentScrollbars,
   htmlFrameVisualCanvasHeight,
+  htmlFrameWebviewZoomFactor,
   resolveHtmlFrameMeasurementDecision,
   shouldAutoResizeHtmlFrame,
   shouldRenderHtmlFrameWebview
@@ -59,7 +60,10 @@ type FakeTextNode = {
   rects: Array<{ width: number; height: number; bottom: number; right?: number }>
 }
 
-function runContentSizeQuery(body: FakeHTMLElement): {
+function runContentSizeQuery(
+  body: FakeHTMLElement,
+  options: { innerHeight?: number } = {}
+): {
   width: number
   height: number
   documentHeight: number
@@ -85,7 +89,7 @@ function runContentSizeQuery(body: FakeHTMLElement): {
     scrollY: 0,
     scrollX: 0,
     innerWidth: 420,
-    innerHeight: 844,
+    innerHeight: options.innerHeight ?? 844,
     getComputedStyle: (el: FakeHTMLElement) => ({
       display: 'block',
       visibility: 'visible',
@@ -164,6 +168,22 @@ describe('HtmlFrameOverlay pointer event policy', () => {
   })
 })
 
+describe('HtmlFrameOverlay webview native zoom factor', () => {
+  it('passes normal zoom levels through unchanged', () => {
+    expect(htmlFrameWebviewZoomFactor(1)).toBe(1)
+    expect(htmlFrameWebviewZoomFactor(0.35)).toBe(0.35)
+    expect(htmlFrameWebviewZoomFactor(2)).toBe(2)
+  })
+
+  it('clamps to a safe range and falls back for invalid input', () => {
+    expect(htmlFrameWebviewZoomFactor(0)).toBe(1)
+    expect(htmlFrameWebviewZoomFactor(-1)).toBe(1)
+    expect(htmlFrameWebviewZoomFactor(Number.NaN)).toBe(1)
+    expect(htmlFrameWebviewZoomFactor(0.001)).toBe(0.05)
+    expect(htmlFrameWebviewZoomFactor(50)).toBe(4)
+  })
+})
+
 describe('HtmlFrameOverlay visual crop policy', () => {
   it('keeps the full frame visible before measurement', () => {
     expect(htmlFrameVisualCanvasHeight(844, null)).toBe(844)
@@ -223,6 +243,39 @@ describe('HtmlFrameOverlay content measurement query', () => {
       measuredHeight: measured.height,
       documentHeight: measured.documentHeight
     })).toBe(true)
+  })
+
+  it('does not let a previously-shrunk viewport height feed back into excluding real content', () => {
+    // The <webview> host resizes this frame's CSS height to whatever was last
+    // measured, so window.innerHeight reflects OUR prior measurement, not an
+    // independent fact about the page. A threshold anchored to window.innerHeight
+    // would exclude this legitimate ~500px section once the frame had been
+    // shrunk once, permanently converging on a too-small height. The fix anchors
+    // the threshold to documentHeight (scrollHeight-based), which stays correct
+    // regardless of the frame's current (possibly still-wrong) CSS size.
+    const heroText: FakeTextNode = {
+      nodeType: 3,
+      textContent: '欢迎回来',
+      rects: [{ width: 120, height: 24, bottom: 64 }]
+    }
+    const header = new FakeHTMLElement('h1', { width: 300, height: 30, bottom: 64 }, {
+      childNodes: [heroText]
+    })
+    const hero = new FakeHTMLElement('section', { width: 420, height: 500, bottom: 564 }, {
+      style: { backgroundColor: '#112233' }
+    })
+    const body = new FakeHTMLElement('body', { width: 420, height: 3200, bottom: 3200 }, {
+      descendants: [header, hero]
+    })
+    body.scrollHeight = 3200
+    body.offsetHeight = 3200
+    body.clientHeight = 3200
+
+    const healthyViewport = runContentSizeQuery(body, { innerHeight: 3200 })
+    expect(healthyViewport.height).toBeGreaterThanOrEqual(564)
+
+    const afterPriorShrink = runContentSizeQuery(body, { innerHeight: 180 })
+    expect(afterPriorShrink.height).toBe(healthyViewport.height)
   })
 
   it('measures painted width so auto frames can reveal wide HTML content', () => {

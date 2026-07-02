@@ -70,15 +70,32 @@ export const HTML_FRAME_CONTENT_SIZE_QUERY = `(() => {
     }
     return rects
   }
+  // The exclusion threshold below MUST stay independent of window.innerHeight.
+  // The <webview> host resizes this frame's CSS height to whatever we last
+  // measured, so window.innerHeight is a self-referential signal here (it IS the
+  // previous measurement, not an independent fact about the page). Using it as the
+  // threshold created a shrink feedback loop: an early low reading would shrink the
+  // frame, which shrinks window.innerHeight, which lowers the threshold, which
+  // excludes MORE legitimate large sections next pass, converging to a permanently
+  // too-small height. documentHeight (scrollHeight-based) reflects the page's real
+  // natural content size and does not move just because we resized our own frame.
   const hasVisibleBoxPaint = (el, style, rect) => {
     if (el === body || el === html) return false
     const backgroundColor = style.backgroundColor || ''
     const hasBackgroundColor = backgroundColor && !/rgba?\\(\\s*0\\s*,\\s*0\\s*,\\s*0\\s*,\\s*0\\s*\\)|transparent/i.test(backgroundColor)
     const hasBackgroundImage = style.backgroundImage && style.backgroundImage !== 'none'
     if (hasBackgroundImage) return true
-    if (rect.height > Math.max(480, window.innerHeight * 0.65)) return false
+    if (rect.height > Math.max(480, documentHeight * 0.65)) return false
     return hasBackgroundColor
   }
+  const documentHeight = Math.max(...nums(
+    html?.scrollHeight,
+    html?.offsetHeight,
+    html?.clientHeight,
+    body?.scrollHeight,
+    body?.offsetHeight,
+    body?.clientHeight
+  ), 1)
   const candidates = body ? [body, ...Array.from(body.querySelectorAll('*'))] : []
   const visibleElementRects = candidates.flatMap((el) => {
         if (!(el instanceof HTMLElement || el instanceof SVGElement)) return []
@@ -107,14 +124,6 @@ export const HTML_FRAME_CONTENT_SIZE_QUERY = `(() => {
     body?.clientWidth,
     paintedWidth,
     window.innerWidth
-  ), 1)
-  const documentHeight = Math.max(...nums(
-    html?.scrollHeight,
-    html?.offsetHeight,
-    html?.clientHeight,
-    body?.scrollHeight,
-    body?.offsetHeight,
-    body?.clientHeight
   ), 1)
   const height = paintedHeight > 0 ? Math.min(documentHeight, paintedHeight + 16) : documentHeight
   return {
@@ -349,6 +358,22 @@ type WebviewElement = HTMLElement & {
   loadURL?: (url: string) => Promise<void>
   reload?: () => void
   getURL?: () => string
+  setZoomFactor?: (factor: number) => void
+}
+
+/**
+ * Electron/Chromium has a long-standing bug where CSS `transform: scale()` on a
+ * `<webview>` (or any of its ancestors) produces cropped/double-scaled rendering
+ * that gets progressively worse further from the transform origin — see
+ * https://github.com/electron/electron/issues/2168 (upstream crbug.com/492182).
+ * That is precisely what "renders fine near the top, blank/cropped further down a
+ * tall frame" looks like. The documented fix is to size the `<webview>` at its
+ * REAL on-screen pixel size (no CSS transform anywhere in its ancestor chain) and
+ * use the webview's native zoom instead of CSS to scale its content.
+ */
+export function htmlFrameWebviewZoomFactor(zoom: number): number {
+  if (!Number.isFinite(zoom) || zoom <= 0) return 1
+  return Math.min(4, Math.max(0.05, zoom))
 }
 
 type ScreenOverlayProps = {
@@ -417,6 +442,7 @@ function ScreenOverlayInner({
   const webviewReadyRef = useRef(false)
   const loadedFileRef = useRef('')
   const lastLoadedRevisionRef = useRef(-1)
+  const zoomRef = useRef(zoom)
   const qualitySignatureRef = useRef('')
   const measurementTimersRef = useRef<number[]>([])
   const [qualityChecked, setQualityChecked] = useState(false)
@@ -824,6 +850,39 @@ function ScreenOverlayInner({
     )?.catch(() => undefined)
   }, [revision, suppressDocumentScrollbars, webviewMountNonce, webviewUrl])
 
+  // Apply the webview's NATIVE zoom (not a CSS transform — see the comment above
+  // htmlFrameWebviewZoomFactor) so its content renders at canvasWidth x
+  // visualCanvasHeight logical size while the element itself only occupies the
+  // small on-screen box. `zoom` changes continuously during pan/zoom gestures, and
+  // setZoomFactor is comparatively expensive (a real re-layout in the guest), so
+  // debounce it during gestures — the CSS size (cheap, native <webview> resize)
+  // still tracks every frame, it is only the content's zoom that lags briefly.
+  // Re-apply immediately (no debounce) on every navigation, since a fresh guest
+  // page always starts back at 100% zoom.
+  const applyZoomFactor = useCallback((): void => {
+    const wv = webviewRef.current
+    if (typeof wv?.setZoomFactor !== 'function') return
+    try {
+      wv.setZoomFactor(htmlFrameWebviewZoomFactor(zoomRef.current))
+    } catch {
+      /* webview may be mid-navigation/detached */
+    }
+  }, [])
+
+  useEffect(() => {
+    zoomRef.current = zoom
+    const timer = window.setTimeout(applyZoomFactor, 120)
+    return () => window.clearTimeout(timer)
+  }, [zoom, applyZoomFactor])
+
+  useEffect(() => {
+    const wv = webviewRef.current
+    if (!wv || !webviewUrl) return
+    applyZoomFactor()
+    wv.addEventListener('dom-ready', applyZoomFactor)
+    return () => wv.removeEventListener('dom-ready', applyZoomFactor)
+  }, [webviewMountNonce, webviewUrl, applyZoomFactor])
+
   const measureContentSize = useCallback((): void => {
     const wv = webviewRef.current
     if (!artifact?.id || artifactKind !== 'html') return
@@ -1168,10 +1227,8 @@ function ScreenOverlayInner({
         <div
           className="absolute left-0 top-0 overflow-hidden"
           style={{
-            width: canvasWidth,
-            height: visualCanvasHeight,
-            transform: `scale(${zoom})`,
-            transformOrigin: 'top left'
+            width: screenWidth,
+            height: visualScreenHeight
           }}
         >
           {webviewUrl ? (
@@ -1181,6 +1238,12 @@ function ScreenOverlayInner({
               // and repaints white; keeping the element mounted lets Electron navigate
               // in place via the `src` change while the old frame stays painted until
               // the next page is ready, so the canvas updates without a white flash.
+              //
+              // Deliberately NOT css-transformed (see htmlFrameWebviewZoomFactor): the
+              // element is sized at its REAL on-screen pixel size and the guest's
+              // content is scaled via the native zoom API instead, avoiding a
+              // long-standing Chromium bug where transform-scaling a <webview>
+              // produces cropped/blank rendering that worsens away from the origin.
               key={fileUrl}
               ref={setWebviewNode as React.Ref<WebviewElement>}
               src={fileUrl}
@@ -1188,8 +1251,8 @@ function ScreenOverlayInner({
               webpreferences="contextIsolation=yes,nodeIntegration=no,sandbox=yes"
               className="block border-0"
               style={{
-                width: canvasWidth,
-                height: visualCanvasHeight,
+                width: screenWidth,
+                height: visualScreenHeight,
                 pointerEvents: interactive ? 'auto' : 'none'
               }}
             />
@@ -1207,7 +1270,7 @@ function ScreenOverlayInner({
                     ? 'flex max-w-[70%] items-center gap-1.5 rounded-full border border-accent/25 bg-white/90 px-3 py-1.5 text-center text-[11px] font-semibold text-accent shadow-[0_10px_30px_rgba(20,47,95,0.12)] backdrop-blur-md dark:bg-ds-card/90'
                     : 'flex flex-col items-center gap-2 text-center'
                 }
-                style={{ fontSize: Math.min(16, Math.max(12, canvasWidth * 0.018)) }}
+                style={{ fontSize: Math.min(16, Math.max(12, screenWidth * 0.018)) }}
               >
                 {drawingActive || placeholderPreview ? (
                   <Brush
@@ -1248,23 +1311,28 @@ function ScreenOverlayInner({
             <div
               className="pointer-events-none absolute border border-accent bg-accent/10 shadow-[0_0_0_1px_rgba(255,255,255,0.75)]"
               style={{
-                left: selectedElementRect.left,
-                top: selectedElementRect.top,
-                width: selectedElementRect.width,
-                height: selectedElementRect.height
+                // selectedElementRect comes from the guest's own getBoundingClientRect(),
+                // i.e. logical canvasWidth-space px (zoomFactor doesn't change how the
+                // guest reports its own coordinates). This overlay now sits in a
+                // screen-sized (not canvas-sized+transformed) wrapper, so project the
+                // logical rect into screen space explicitly.
+                left: selectedElementRect.left * zoom,
+                top: selectedElementRect.top * zoom,
+                width: selectedElementRect.width * zoom,
+                height: selectedElementRect.height * zoom
               }}
             />
           ) : null}
           {aiCursor ? (
             <div className="pointer-events-none absolute inset-0 overflow-hidden">
-              {/* Glow on the section the agent just wrote */}
+              {/* Glow on the section the agent just wrote (logical -> screen space, see above) */}
               <div
                 className="absolute rounded-[3px] border"
                 style={{
-                  left: aiCursor.left,
-                  top: aiCursor.top,
-                  width: aiCursor.width,
-                  height: aiCursor.height,
+                  left: aiCursor.left * zoom,
+                  top: aiCursor.top * zoom,
+                  width: aiCursor.width * zoom,
+                  height: aiCursor.height * zoom,
                   borderColor: 'color-mix(in srgb, var(--ds-accent) 75%, transparent)',
                   background: 'color-mix(in srgb, var(--ds-accent) 9%, transparent)',
                   boxShadow:
@@ -1273,12 +1341,14 @@ function ScreenOverlayInner({
                     'left 360ms cubic-bezier(0.22,1,0.36,1), top 360ms cubic-bezier(0.22,1,0.36,1), width 360ms ease, height 360ms ease'
                 }}
               />
-              {/* Animated AI cursor + label, clamped to stay visible */}
+              {/* Animated AI cursor + label, clamped to stay visible. The -8/-2/-22 nudges
+                  are constant SCREEN px (like the rest of the UI chrome), applied after
+                  projecting the underlying rect into screen space. */}
               <div
                 className="absolute flex items-center gap-1"
                 style={{
-                  left: Math.min(aiCursor.left + aiCursor.width - 8, canvasWidth - 8),
-                  top: Math.max(2, Math.min(aiCursor.top - 2, canvasHeight - 22)),
+                  left: Math.min(aiCursor.left * zoom + aiCursor.width * zoom - 8, screenWidth - 8),
+                  top: Math.max(2, Math.min(aiCursor.top * zoom - 2, visualScreenHeight - 22)),
                   transition:
                     'left 360ms cubic-bezier(0.22,1,0.36,1), top 360ms cubic-bezier(0.22,1,0.36,1)'
                 }}

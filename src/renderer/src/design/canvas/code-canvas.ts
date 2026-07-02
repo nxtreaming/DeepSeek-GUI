@@ -3,6 +3,7 @@ import { canvasDocumentKey, loadCanvasDocument } from './canvas-persistence'
 import { snapshotCanvas, type CanvasSnapshot } from './canvas-snapshot'
 import { loadDesignSystem } from './design-system-persistence'
 import { createEmptyDesignSystem, type DesignSystem } from './design-system-types'
+import { looksLikeStandaloneImageAssetPrompt } from '../design-image-intent'
 
 /** Workspace subdir for code-mode canvases. Kept out of `.kun-design` so design
  * mode's artifact lister (which enumerates `.kun-design/*`) never sees them. */
@@ -129,6 +130,7 @@ export function shouldRouteOpenCodeWhiteboardPrompt(
   if (!value) return false
   if (HTML_CANVAS_CODE_PATTERNS.some((pattern) => pattern.test(value))) return false
   if (/\bwhiteboard\b/i.test(value) || /白板/.test(value)) return true
+  if (looksLikeStandaloneImageAssetPrompt(value)) return true
   const hasSelection = options?.hasSelection === true
   const englishEdit = OPEN_WHITEBOARD_ENGLISH_EDIT_VERB.test(value)
   if (englishEdit && OPEN_WHITEBOARD_ENGLISH_SHAPE_TARGET.test(value)) return true

@@ -549,10 +549,10 @@ function MessageTurn({
   )
   const onlyCompactionProcess = processBlocks.length > 0 && workProcessBlocks.length === 0
   const hasProcessError = workProcessBlocks.some(processBlockHasError)
-  // Error details should stay visible after completion so provider/runtime
-  // failures do not disappear into a collapsed work summary.
+  // Keep active failures visible while a turn is still running, but fold
+  // completed failures into the normal work summary until the user opens it.
   const forceExpandForError = isProcessing && hasProcessError
-  const workExpanded = forceExpandForError || (workExpandedOverride ?? (isProcessing || hasProcessError))
+  const workExpanded = forceExpandForError || (workExpandedOverride ?? isProcessing)
   const reviewBlocks = useMemo(
     () => turn.blocks.filter((block) => block.kind === 'review'),
     [turn.blocks]

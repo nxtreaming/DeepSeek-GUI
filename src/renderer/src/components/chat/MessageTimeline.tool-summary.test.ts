@@ -444,6 +444,28 @@ describe('MessageTimeline Kun runtime metadata smoke', () => {
     expect(html).toContain('aria-expanded="false"')
   })
 
+  it('keeps an active failed-tool detail visible while the turn is running', () => {
+    const block: ChatBlock = toolBlock({
+      summary: 'Recognize image recognize_image',
+      status: 'error',
+      detail: 'model request failed with status 401',
+      meta: { toolName: 'recognize_image' }
+    })
+
+    const html = renderToStaticMarkup(
+      createElement(ProcessSectionRow, {
+        section: { id: 'execution-tool_error', kind: 'execution', blocks: [block] },
+        processing: true,
+        singleReasoningSection: false,
+        viewportRef: { current: null }
+      })
+    )
+
+    expect(html).toContain('Recognize image recognize_image')
+    expect(html).toContain('model request failed with status 401')
+    expect(html).toContain('aria-expanded="true"')
+  })
+
   it('expands active reasoning so the current process is visible', () => {
     const block: ChatBlock = {
       kind: 'reasoning',

@@ -626,7 +626,7 @@ function designExportSaveDialog(
 /**
  * Export a design prototype (an already-complete single-file HTML document) to
  * a standalone .html or a .pdf (rendered via a hidden BrowserWindow). Reuses the
- * write-mode renderHtmlToPdf pipeline.
+ * write-mode HTML render pipeline.
  */
 export async function exportDesignPrototype(
   payload: DesignExportPayload,
@@ -643,7 +643,7 @@ export async function exportDesignPrototype(
       ? dialogResult.filePath
       : `${dialogResult.filePath}${ext}`
     if (payload.format === 'pdf') {
-      await writeFile(targetPath, await renderHtmlToPdf(html))
+      await writeFile(targetPath, await renderHtmlDocument(html, 'pdf'))
     } else {
       await writeFile(targetPath, html, 'utf8')
     }

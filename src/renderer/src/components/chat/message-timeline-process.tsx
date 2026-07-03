@@ -387,8 +387,7 @@ function ProcessStackRows({
         const autoOpenPending = processBlockIsAutoOpenPending(block, processing) || isPendingApproval(block)
         const errorTone = processBlockErrorTone(block)
         const isError = errorTone !== null
-        // Error details are visible by default but remain collapsible.
-        const defaultOpen = isError
+        const defaultOpen = processing && isError
         const forceOpen = autoOpenPending || autoOpenRequestInput
         const userClosed = closedBlockIds.has(block.id)
         const userOpened = openBlockId === block.id
@@ -503,8 +502,7 @@ function ProcessEntryRow({
   const errorTone = processBlockErrorTone(block)
   const isError = errorTone !== null
   const forceOpen = isAutoOpenPending || isAssistantProcessText || isStreamingAssistant
-  // Error details are visible by default but remain collapsible.
-  const defaultOpen = isError
+  const defaultOpen = processing && isError
   const open =
     canExpand &&
     (forceOpen || (userOpen ?? defaultOpen))

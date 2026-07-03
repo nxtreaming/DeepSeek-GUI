@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { isAbsolute, join, resolve } from 'node:path'
@@ -450,6 +451,24 @@ const COMMAND_TIMEOUT_MS = 30_000
 const PYTHON_BIN = process.env.WORKFLOW_PYTHON_BIN?.trim() || 'python3'
 const MAX_SUBWORKFLOW_DEPTH = 5
 
+function resolveBashBin(): string {
+  const configured = process.env.WORKFLOW_BASH_BIN?.trim()
+  if (configured) return configured
+  if (process.platform !== 'win32') return 'bash'
+
+  const candidates = [
+    join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
+    join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Git', 'usr', 'bin', 'bash.exe'),
+    join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe')
+  ]
+  if (process.env.LOCALAPPDATA) {
+    candidates.push(join(process.env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'))
+  }
+  return candidates.find((candidate) => existsSync(candidate)) ?? 'bash'
+}
+
+const BASH_BIN = resolveBashBin()
+
 function runCodeNode(
   code: string,
   payload: WorkflowPayload,
@@ -488,7 +507,7 @@ function runCommandNode(
   payload: WorkflowPayload,
   fields: Record<string, unknown> = {}
 ): Promise<NodeOutcome> {
-  const bin = language === 'python' ? PYTHON_BIN : 'bash'
+  const bin = language === 'python' ? PYTHON_BIN : BASH_BIN
   return new Promise((resolve, reject) => {
     const child = spawn(bin, ['-c', code], {
       env: {
@@ -616,7 +635,7 @@ export function checkWorkflowCode(language: WorkflowCodeLanguage, code: string):
       return Promise.resolve({ status: 'error', message: error instanceof Error ? error.message : String(error) })
     }
   }
-  const bin = language === 'python' ? PYTHON_BIN : 'bash'
+  const bin = language === 'python' ? PYTHON_BIN : BASH_BIN
   const args = language === 'python' ? ['-c', 'import ast, sys; ast.parse(sys.stdin.read())'] : ['-n']
   return new Promise((resolveResult) => {
     let settled = false

@@ -4,12 +4,13 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto'
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 const CODEX_ISSUER = 'https://auth.openai.com'
 const CODEX_DEVICE_CALLBACK = `${CODEX_ISSUER}/deviceauth/callback`
-// OpenAI registers this exact redirect for the Codex CLI app; the port is
-// not configurable. If it is occupied the browser flow fails fast.
-const CODEX_OAUTH_PORT = 1455
-const CODEX_OAUTH_REDIRECT = `http://localhost:${CODEX_OAUTH_PORT}/auth/callback`
+// Keep in sync with the Codex CLI Hydra redirect URI allow-list.
+const CODEX_OAUTH_PORTS = [1455, 1457] as const
+const CODEX_OAUTH_HOST = '127.0.0.1'
 const CODEX_OAUTH_TIMEOUT_MS = 5 * 60 * 1000
 const CODEX_SESSION_ID = randomUUID()
+const CODEX_OAUTH_SCOPE = 'openid profile email offline_access api.connectors.read api.connectors.invoke'
+const CODEX_ORIGINATOR = 'codex_cli_rs'
 
 export type CodexOAuthCredentials = {
   kind: 'codex-oauth'
@@ -109,10 +110,31 @@ async function postForm(url: string, body: Record<string, string>): Promise<Reco
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(body).toString()
   })
+  const text = await res.text()
   if (!res.ok) {
-    throw new Error(`Codex auth: ${url} returned ${res.status}`)
+    const detail = summarizeAuthErrorBody(text)
+    throw new Error(`Codex auth: ${url} returned ${res.status}${detail ? `: ${detail}` : ''}`)
   }
-  return res.json() as Promise<Record<string, unknown>>
+  try {
+    return JSON.parse(text) as Record<string, unknown>
+  } catch {
+    throw new Error(`Codex auth: unexpected response from ${url}: ${text.slice(0, 200)}`)
+  }
+}
+
+function summarizeAuthErrorBody(text: string): string {
+  const compact = text.replace(/\s+/g, ' ').trim()
+  if (!compact) return ''
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>
+    const parts = [
+      typeof parsed.error === 'string' ? parsed.error : '',
+      typeof parsed.error_description === 'string' ? parsed.error_description : '',
+      typeof parsed.message === 'string' ? parsed.message : ''
+    ].filter(Boolean)
+    if (parts.length) return parts.join(': ').slice(0, 300)
+  } catch { /* fall through */ }
+  return compact.slice(0, 300)
 }
 
 export async function startCodexDeviceAuth(): Promise<CodexAuthStartResult> {
@@ -230,18 +252,22 @@ function generatePkce(): { verifier: string; challenge: string } {
   return { verifier, challenge }
 }
 
-function buildAuthorizeUrl(pkceChallenge: string, state: string): string {
+function codexOAuthRedirect(port: number): string {
+  return `http://localhost:${port}/auth/callback`
+}
+
+function buildAuthorizeUrl(pkceChallenge: string, state: string, redirectUri: string): string {
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: CODEX_CLIENT_ID,
-    redirect_uri: CODEX_OAUTH_REDIRECT,
-    scope: 'openid profile email offline_access',
+    redirect_uri: redirectUri,
+    scope: CODEX_OAUTH_SCOPE,
     code_challenge: pkceChallenge,
     code_challenge_method: 'S256',
     id_token_add_organizations: 'true',
     codex_cli_simplified_flow: 'true',
     state,
-    originator: 'deepseekgui'
+    originator: CODEX_ORIGINATOR
   })
   return `${CODEX_ISSUER}/oauth/authorize?${params.toString()}`
 }
@@ -274,9 +300,9 @@ function renderCodexErrorHtml(message: string): string {
 
 /**
  * Full browser OAuth (authorization code + PKCE). Opens the user's default
- * browser via `openBrowser`, runs a one-shot localhost:1455 callback server,
+ * browser via `openBrowser`, runs a one-shot local callback server,
  * exchanges the returned code for tokens, and resolves with credentials. The
- * callback URL/port is fixed by OpenAI's app registration.
+ * callback URL ports are fixed by OpenAI's app registration.
  */
 export async function startCodexBrowserAuth(
   openBrowser: (url: string) => void | Promise<void>
@@ -287,31 +313,41 @@ export async function startCodexBrowserAuth(
 
   const cleanup = (): void => {
     if (server) {
-      server.close(() => {})
+      try {
+        server.close(() => {})
+      } catch { /* server may not have finished binding */ }
       server = null
     }
   }
 
   try {
     const credentials = await new Promise<CodexOAuthCredentials>((resolve, reject) => {
+      let settled = false
       const timeout = setTimeout(() => {
         cleanup()
         reject(new Error('授权超时，请重试'))
       }, CODEX_OAUTH_TIMEOUT_MS)
 
       const settleReject = (error: Error): void => {
+        if (settled) return
+        settled = true
         clearTimeout(timeout)
         cleanup()
         reject(error)
       }
       const settleResolve = (creds: CodexOAuthCredentials): void => {
+        if (settled) return
+        settled = true
         clearTimeout(timeout)
         cleanup()
         resolve(creds)
       }
 
+      let portIndex = 0
+      let activePort = CODEX_OAUTH_PORTS[portIndex]
+
       server = createServer((req, res) => {
-        const url = new URL(req.url || '/', `http://localhost:${CODEX_OAUTH_PORT}`)
+        const url = new URL(req.url || '/', `http://localhost:${activePort}`)
         if (url.pathname !== '/auth/callback') {
           res.writeHead(404).end('Not found')
           return
@@ -334,7 +370,7 @@ export async function startCodexBrowserAuth(
         postForm(`${CODEX_ISSUER}/oauth/token`, {
           grant_type: 'authorization_code',
           code,
-          redirect_uri: CODEX_OAUTH_REDIRECT,
+          redirect_uri: codexOAuthRedirect(activePort),
           client_id: CODEX_CLIENT_ID,
           code_verifier: pkce.verifier
         })
@@ -351,23 +387,38 @@ export async function startCodexBrowserAuth(
           })
       })
 
-      server.on('error', (err: NodeJS.ErrnoException) => {
+      let listen: () => void
+      const onListenError = (err: NodeJS.ErrnoException): void => {
+        server?.off('error', onListenError)
+        if (err.code === 'EADDRINUSE' && portIndex < CODEX_OAUTH_PORTS.length - 1) {
+          portIndex += 1
+          listen()
+          return
+        }
         const message =
           err.code === 'EADDRINUSE'
-            ? `端口 ${CODEX_OAUTH_PORT} 被占用，无法完成登录回调`
+            ? `端口 ${CODEX_OAUTH_PORTS.join('/')} 被占用，无法完成登录回调`
             : err.message
         settleReject(
           err.code === 'EADDRINUSE'
             ? new CodexBrowserAuthError(message, 'port_in_use')
             : new Error(message)
         )
-      })
+      }
 
-      server.listen(CODEX_OAUTH_PORT, () => {
-        void Promise.resolve(openBrowser(buildAuthorizeUrl(pkce.challenge, state))).catch((err: unknown) => {
-          settleReject(err instanceof Error ? err : new Error(String(err)))
+      listen = (): void => {
+        activePort = CODEX_OAUTH_PORTS[portIndex]
+        server?.once('error', onListenError)
+        server?.listen(activePort, CODEX_OAUTH_HOST, () => {
+          server?.off('error', onListenError)
+          const redirectUri = codexOAuthRedirect(activePort)
+          void Promise.resolve(openBrowser(buildAuthorizeUrl(pkce.challenge, state, redirectUri))).catch((err: unknown) => {
+            settleReject(err instanceof Error ? err : new Error(String(err)))
+          })
         })
-      })
+      }
+
+      listen()
     })
     return { ok: true, credentials }
   } catch (error) {
@@ -402,9 +453,9 @@ export function encodeCodexCredentials(creds: CodexOAuthCredentials): string {
 export function codexRequestHeaders(creds: CodexOAuthCredentials): Record<string, string> {
   return {
     'ChatGPT-Account-Id': creds.accountId,
-    originator: 'codex_cli_rs',
+    originator: CODEX_ORIGINATOR,
     'OpenAI-Beta': 'responses=experimental',
-    'User-Agent': 'codex_cli_rs/0.0.0 (deepseekgui)',
+    'User-Agent': `${CODEX_ORIGINATOR}/0.0.0 (deepseekgui)`,
     session_id: CODEX_SESSION_ID
   }
 }

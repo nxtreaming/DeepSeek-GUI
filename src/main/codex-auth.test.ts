@@ -1,8 +1,9 @@
-import { createServer, type Server } from 'node:http'
-import { afterEach, describe, expect, it } from 'vitest'
+import { createServer, get as httpGet, type Server } from 'node:http'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { startCodexBrowserAuth } from './codex-auth'
 
-const CODEX_OAUTH_PORT = 1455
+const CODEX_OAUTH_PORTS = [1455, 1457] as const
+const CODEX_OAUTH_SCOPE = 'openid profile email offline_access api.connectors.read api.connectors.invoke'
 
 function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -13,7 +14,7 @@ function closeServer(server: Server): Promise<void> {
   })
 }
 
-function listenOnCodexOAuthPort(): Promise<Server | null> {
+function listenOnPort(port: number): Promise<Server | null> {
   return new Promise((resolve, reject) => {
     const server = createServer((_, res) => {
       res.writeHead(204).end()
@@ -25,33 +26,139 @@ function listenOnCodexOAuthPort(): Promise<Server | null> {
       }
       reject(error)
     })
-    server.listen(CODEX_OAUTH_PORT, () => {
+    server.listen(port, '127.0.0.1', () => {
       resolve(server)
     })
   })
 }
 
+function encodeJwt(payload: Record<string, unknown>): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url')
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url')
+  return `${header}.${body}.`
+}
+
+function successfulTokenBody() {
+  const claims = {
+    email: 'codex@example.com',
+    'https://api.openai.com/auth': { chatgpt_account_id: 'acct_123' }
+  }
+  return {
+    access_token: encodeJwt(claims),
+    refresh_token: 'refresh-token',
+    id_token: encodeJwt(claims),
+    expires_in: 3600
+  }
+}
+
+function hitCallback(redirectUri: string, state: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(redirectUri)
+    url.hostname = '127.0.0.1'
+    url.searchParams.set('code', 'auth-code')
+    url.searchParams.set('state', state)
+    const req = httpGet(url, (res) => {
+      res.resume()
+      res.on('end', resolve)
+    })
+    req.on('error', reject)
+  })
+}
+
 describe('startCodexBrowserAuth', () => {
-  let blocker: Server | null = null
+  let blockers: Server[] = []
 
   afterEach(async () => {
-    if (!blocker) return
-    const server = blocker
-    blocker = null
-    await closeServer(server)
+    vi.restoreAllMocks()
+    const closing = blockers
+    blockers = []
+    await Promise.all(closing.map((server) => closeServer(server)))
   })
 
-  it('returns a structured fallback code when the fixed callback port is busy', async () => {
-    blocker = await listenOnCodexOAuthPort()
+  it('falls back to the registered 1457 callback port when 1455 is busy', async () => {
+    const fallbackProbe = await listenOnPort(1457)
+    if (!fallbackProbe) return
+    await closeServer(fallbackProbe)
 
-    const result = await startCodexBrowserAuth(() => {
-      throw new Error('openBrowser should not run while the callback port is busy')
+    const blocker = await listenOnPort(1455)
+    if (blocker) blockers.push(blocker)
+
+    const tokenRequests: Array<{ url: string; body: string }> = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      tokenRequests.push({ url: String(url), body: String(init?.body ?? '') })
+      return new Response(JSON.stringify(successfulTokenBody()), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
     })
 
+    let authUrlString = ''
+    const result = await startCodexBrowserAuth(async (url) => {
+      authUrlString = url
+      const authUrl = new URL(url)
+      const redirectUri = authUrl.searchParams.get('redirect_uri')
+      const state = authUrl.searchParams.get('state')
+      if (!redirectUri || !state) throw new Error('missing OAuth redirect data')
+      await hitCallback(redirectUri, state)
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      credentials: {
+        accountId: 'acct_123',
+        email: 'codex@example.com',
+        refreshToken: 'refresh-token'
+      }
+    })
+    const authUrl = new URL(authUrlString)
+    expect(authUrl.searchParams.get('redirect_uri')).toBe('http://localhost:1457/auth/callback')
+    expect(authUrl.searchParams.get('scope')).toBe(CODEX_OAUTH_SCOPE)
+    expect(authUrl.searchParams.get('originator')).toBe('codex_cli_rs')
+    const tokenBody = new URLSearchParams(tokenRequests[0]?.body ?? '')
+    expect(tokenBody.get('redirect_uri')).toBe('http://localhost:1457/auth/callback')
+  })
+
+  it('returns a structured fallback code only when all callback ports are busy', async () => {
+    for (const port of CODEX_OAUTH_PORTS) {
+      const blocker = await listenOnPort(port)
+      if (blocker) blockers.push(blocker)
+    }
+    const openBrowser = vi.fn()
+
+    const result = await startCodexBrowserAuth(openBrowser)
+
+    expect(openBrowser).not.toHaveBeenCalled()
     expect(result).toMatchObject({
       ok: false,
       code: 'port_in_use'
     })
-    if (!result.ok) expect(result.message).toContain(String(CODEX_OAUTH_PORT))
+    if (!result.ok) {
+      expect(result.message).toContain('1455/1457')
+    }
+  })
+
+  it('includes token endpoint error details when the exchange is rejected', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify({
+        error: 'access_denied',
+        error_description: 'workspace disallowed'
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    })
+
+    const result = await startCodexBrowserAuth(async (url) => {
+      const authUrl = new URL(url)
+      const redirectUri = authUrl.searchParams.get('redirect_uri')
+      const state = authUrl.searchParams.get('state')
+      if (!redirectUri || !state) throw new Error('missing OAuth redirect data')
+      await hitCallback(redirectUri, state)
+    })
+
+    expect(result).toMatchObject({ ok: false })
+    if (!result.ok) {
+      expect(result.message).toContain('returned 403: access_denied: workspace disallowed')
+    }
   })
 })

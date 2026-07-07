@@ -1332,7 +1332,7 @@
   "codexOpenBrowser": "Open in browser",
   "codexWaitingAuth": "Waiting for authorization...",
   "codexPreparingDeviceLogin": "Preparing device-code sign-in...",
-  "codexLoginPortBusyFallback": "Port 1455 is in use, so device-code sign-in is ready instead.",
+  "codexLoginPortBusyFallback": "Local callback ports 1455 and 1457 are in use, so device-code sign-in is ready instead.",
   "memoryDiscardConfirm": "Discard unsaved changes?",
   "memoryDiscardConfirmDetail": "Your edits will be lost.",
   "memoryDiscardConfirmAction": "Discard",

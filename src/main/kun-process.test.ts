@@ -15,6 +15,7 @@ import {
   defaultModelProviderSettings,
   defaultScheduleSettings,
   defaultWorkflowSettings,
+  resolveKunRuntimeSettings,
   defaultWriteSettings,
   defaultTerminalSettings,
   type AppSettingsV1
@@ -629,6 +630,57 @@ describe('syncGuiManagedKunConfig', () => {
       contextWindowTokens: 256_000,
       maxOutputTokens: 32_000
     })
+  })
+
+  it('writes the selected provider endpoint into the default model client config', async () => {
+    if (!tempRoot) throw new Error('temp root not initialized')
+    const configPath = join(tempRoot, 'config.json')
+    const module = await import('./kun-process')
+    const settings = createSettings('/tmp/fake-kun-child.js')
+    settings.provider.proxy = { enabled: true, url: 'socks5://127.0.0.1:1080' }
+    settings.provider.providers = [
+      ...settings.provider.providers,
+      {
+        id: 'custom',
+        name: 'NewAPI',
+        apiKey: 'sk-newapi',
+        baseUrl: 'https://newapi.example/v1',
+        endpointFormat: 'chat_completions',
+        retry: {
+          maxAttempts: 0,
+          initialDelayMs: 3000,
+          httpStatusCodes: [429, 503]
+        },
+        models: ['glm-5.2'],
+        modelProfiles: {}
+      }
+    ]
+    settings.agents.kun = {
+      ...settings.agents.kun,
+      providerId: 'custom',
+      model: 'glm-5.2'
+    }
+
+    await module.syncGuiManagedKunConfig(tempRoot, resolveKunRuntimeSettings(settings), {
+      scheduleMcp: {
+        settings,
+        launch: {
+          appPath: '/tmp/deepseek-gui-test-app',
+          execPath: '/tmp/electron',
+          isPackaged: false
+        }
+      }
+    })
+
+    const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as any
+    expect(parsed.serve).toMatchObject({
+      baseUrl: 'https://newapi.example/v1',
+      endpointFormat: 'chat_completions',
+      model: 'glm-5.2',
+      modelProxyUrl: 'socks5://127.0.0.1:1080'
+    })
+    expect(parsed.serve.providers?.custom).toBeUndefined()
+    expect(KunConfigSchema.safeParse(parsed).success).toBe(true)
   })
 
   it('writes the memory capability from the GUI memory toggle', async () => {

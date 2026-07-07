@@ -469,6 +469,9 @@ export async function syncGuiManagedKunConfig(
   runtime: Pick<
     KunRuntimeSettingsV1,
     | 'apiKey'
+    | 'baseUrl'
+    | 'endpointFormat'
+    | 'model'
     | 'mcpSearch'
     | 'retry'
     | 'tokenEconomy'
@@ -543,6 +546,9 @@ export async function syncGuiManagedKunConfig(
   const providers = options?.scheduleMcp?.settings
     ? providersConfigForRuntime(options.scheduleMcp.settings)
     : undefined
+  const defaultModelProxyUrl = options?.scheduleMcp?.settings
+    ? resolveModelProviderProxyUrl(options.scheduleMcp.settings)
+    : undefined
   // When the active provider is Codex, emit its required headers as the default
   // client's serve.headers (the bare access token goes to DEEPSEEK_API_KEY).
   // Always set the key explicitly (undefined clears it) so switching away from
@@ -552,6 +558,10 @@ export async function syncGuiManagedKunConfig(
     serve: {
       ...serve,
       storage,
+      baseUrl: runtime.baseUrl.trim() || undefined,
+      endpointFormat: runtime.endpointFormat,
+      model: runtime.model.trim() || undefined,
+      modelProxyUrl: defaultModelProxyUrl || undefined,
       retry: runtime.retry,
       tokenEconomy: tokenEconomyConfigForRuntime(runtime.tokenEconomy, existingTokenEconomy),
       toolOutputLimits: toolOutputLimitsConfigForRuntime(runtime.toolOutputLimits),

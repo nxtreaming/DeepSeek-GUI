@@ -587,6 +587,55 @@ describe('chat-store-thread-actions createThread conversation mode', () => {
     vi.unstubAllGlobals()
   })
 
+  it('refuses to create a project thread when the workspace directory is missing', async () => {
+    const createThreadProvider = vi.fn()
+    const alertDialog = vi.fn(async () => undefined)
+    registryMock.getProvider.mockReturnValue({ createThread: createThreadProvider })
+    vi.stubGlobal('window', {
+      kunGui: {
+        getSettings: vi.fn(async () => ({
+          workspaceRoot: 'E:\\missing-project',
+          agents: { kun: { subagents: { profiles: [] } } }
+        })),
+        workspaceDirectoryExists: vi.fn(async () => false),
+        alertDialog
+      }
+    })
+    const { actions, state } = buildHarness()
+    state.activeThreadId = null
+    state.threads = []
+    state.busy = false
+
+    await actions.createThread({ workspaceRoot: 'E:\\missing-project', forceNew: true })
+
+    expect(createThreadProvider).not.toHaveBeenCalled()
+    expect(alertDialog).toHaveBeenCalledOnce()
+    expect(state.error).toBeTruthy()
+    expect(state.activeThreadId).toBeNull()
+  })
+
+  it('shows the missing workspace dialog only when sending a message', async () => {
+    const alertDialog = vi.fn(async () => undefined)
+    registryMock.getProvider.mockReturnValue({})
+    vi.stubGlobal('window', {
+      kunGui: {
+        getSettings: vi.fn(async () => ({ workspaceRoot: 'E:\\missing-project' })),
+        workspaceDirectoryExists: vi.fn(async () => false),
+        alertDialog
+      }
+    })
+    const { actions, state } = buildHarness()
+    state.activeThreadId = null
+    state.threads = []
+    state.busy = false
+
+    await expect(actions.sendMessage('hello', 'agent')).resolves.toBe(false)
+
+    expect(alertDialog).toHaveBeenCalledOnce()
+    expect(state.error).toBeTruthy()
+    expect(state.blocks).toEqual([])
+  })
+
   it('creates a conversation thread bound to the auto-created timestamped workspace', async () => {
     const createdPath = '/home/alice/.local/share/Kun/conversations/20260626-153012'
     const selectThread = vi.fn(async () => undefined)

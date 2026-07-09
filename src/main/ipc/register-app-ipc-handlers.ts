@@ -11,7 +11,7 @@ import { watch, type FSWatcher } from 'node:fs'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, join, resolve } from 'node:path'
-import { access, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { access, copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { z } from 'zod'
 import {
   getKunRuntimeSettings,
@@ -45,6 +45,7 @@ import {
   clawMirrorPayloadSchema,
   clawImInstallPollPayloadSchema,
   clawImTelegramTokenPayloadSchema,
+  alertDialogPayloadSchema,
   confirmDialogPayloadSchema,
   clawTaskFromTextPayloadSchema,
   computerUsePermissionKindSchema,
@@ -1007,6 +1008,19 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     }
   })
 
+  ipcMain.handle('workspace:directory-exists', async (_, workspaceRoot: unknown): Promise<boolean> => {
+    const normalizedWorkspaceRoot = parseIpcPayload(
+      'workspace:directory-exists',
+      workspaceRootSchema,
+      workspaceRoot
+    )
+    try {
+      return (await stat(expandHomePath(normalizedWorkspaceRoot))).isDirectory()
+    } catch {
+      return false
+    }
+  })
+
   ipcMain.handle('file:pick-local-files', async (_, defaultPath: unknown) => {
     const normalizedDefaultPath = parseIpcPayload(
       'file:pick-local-files',
@@ -1049,8 +1063,7 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
         const base =
           `${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}` +
           `-${pad(stamp.getHours())}${pad(stamp.getMinutes())}${pad(stamp.getSeconds())}`
-        // 同秒内连建两个对话会得到相同时间戳目录;mkdir(recursive) 对已存在目录
-        // 不报错,会导致两个会话静默共用目录。冲突时追加随机后缀保证唯一。
+        // 同秒内连建两个对话会得到相同时间戳目录。冲突时追加随机后缀保证唯一。
         let workspacePath = join(root, base)
         let suffixAttempt = 0
         while (await pathExists(workspacePath)) {
@@ -1061,7 +1074,9 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
             : `${stamp.getMilliseconds()}${randomBytes(1).toString('hex')}`
           workspacePath = join(root, `${base}-${suffix}`)
         }
-        await mkdir(workspacePath, { recursive: true })
+        // 对话根目录由设置存储层创建；若用户改成自定义目录，则要求该目录已存在，
+        // 禁止在这里递归补建用户选择的路径。
+        await mkdir(workspacePath)
         return { ok: true, path: workspacePath }
       } catch (error) {
         return {
@@ -1072,6 +1087,25 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       }
     }
   )
+
+  ipcMain.handle('dialog:alert', async (_, payload: unknown): Promise<void> => {
+    const request = parseIpcPayload('dialog:alert', alertDialogPayloadSchema, payload)
+    const options: Electron.MessageBoxOptions = {
+      type: 'warning',
+      buttons: [request.buttonLabel ?? 'OK'],
+      defaultId: 0,
+      cancelId: 0,
+      message: request.message,
+      detail: request.detail,
+      noLink: true
+    }
+    const mainWindow = getMainWindow()
+    if (mainWindow) {
+      await dialog.showMessageBox(mainWindow, options)
+      return
+    }
+    await dialog.showMessageBox(options)
+  })
 
   // Replaces window.confirm in the renderer: the synchronous native confirm
   // leaves the WebContents unable to focus inputs after it closes

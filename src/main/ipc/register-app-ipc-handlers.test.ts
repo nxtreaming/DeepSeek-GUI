@@ -117,6 +117,21 @@ describe('registerAppIpcHandlers', () => {
     expect(applySettingsPatch).not.toHaveBeenCalled()
   })
 
+  it('reports whether a workspace directory currently exists', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kun-workspace-exists-'))
+    const filePath = join(root, 'not-a-directory')
+    writeFileSync(filePath, 'file', 'utf8')
+    registerAppIpcHandlers(registerOptions())
+
+    const handler = handlers.get('workspace:directory-exists')
+    expect(handler).toBeTypeOf('function')
+    await expect(handler?.({}, root)).resolves.toBe(true)
+    await expect(handler?.({}, filePath)).resolves.toBe(false)
+    await expect(handler?.({}, join(root, 'missing'))).resolves.toBe(false)
+
+    rmSync(root, { recursive: true, force: true })
+  })
+
   it('passes valid settings patches through to applySettingsPatch', async () => {
     const applySettingsPatch = vi.fn(async () => settings())
 
@@ -621,6 +636,25 @@ describe('registerAppIpcHandlers', () => {
       expect(second.path.startsWith(root)).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not create a missing custom conversation workspace root', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'kun-conv-missing-'))
+    const root = join(parent, 'custom-root')
+    try {
+      registerAppIpcHandlers(registerOptions({
+        store: { load: vi.fn(async () => ({ ...settings(), conversationWorkspaceRoot: root })) } as never
+      }))
+
+      const handler = handlers.get('conversation:create-workspace')
+      const result = await handler?.({}) as { ok: boolean; path: string; error?: string }
+
+      expect(result.ok).toBe(false)
+      expect(result.path).toBe('')
+      expect(existsSync(root)).toBe(false)
+    } finally {
+      rmSync(parent, { recursive: true, force: true })
     }
   })
 })

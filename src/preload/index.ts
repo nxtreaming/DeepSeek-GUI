@@ -69,10 +69,14 @@ const api = {
     ipcRenderer.invoke('codex:auth:browser'),
   pickWorkspaceDirectory: (defaultPath) =>
     ipcRenderer.invoke('workspace:pick-directory', defaultPath),
+  workspaceDirectoryExists: (workspaceRoot) =>
+    ipcRenderer.invoke('workspace:directory-exists', workspaceRoot),
   pickLocalFiles: (defaultPath) =>
     ipcRenderer.invoke('file:pick-local-files', defaultPath),
   createConversationWorkspace: (root) =>
     ipcRenderer.invoke('conversation:create-workspace', { root }),
+  alertDialog: (options) =>
+    ipcRenderer.invoke('dialog:alert', options),
   confirmDialog: (options) =>
     ipcRenderer.invoke('dialog:confirm', options),
   detectLegacySessions: () =>

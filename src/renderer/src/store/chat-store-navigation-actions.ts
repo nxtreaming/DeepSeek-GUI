@@ -28,6 +28,11 @@ import {
 } from '../lib/thread-fork-registry'
 import { workspaceLabelFromPath } from '../lib/workspace-label'
 import {
+  showWorkspaceMissingDialog,
+  workspaceDirectoryExists,
+  workspaceMissingError
+} from '../lib/workspace-availability'
+import {
   isConversationWorkspacePath,
   isInternalDeepSeekGuiWorkspace,
   isInternalTemporaryWorkspace,
@@ -323,6 +328,11 @@ export function createNavigationActions(
       set({ error: i18n.t('common:runtimeActionNeedsConnection') })
       return null
     }
+    if (!(await workspaceDirectoryExists(targetWorkspace))) {
+      set({ error: workspaceMissingError() })
+      await showWorkspaceMissingDialog(targetWorkspace)
+      return null
+    }
     try {
       const p = getProvider()
       const thread = await p.createThread({
@@ -411,6 +421,11 @@ export function createNavigationActions(
     }
     if (get().runtimeConnection !== 'ready') {
       set({ error: i18n.t('common:runtimeActionNeedsConnection') })
+      return null
+    }
+    if (!(await workspaceDirectoryExists(targetWorkspace))) {
+      set({ error: workspaceMissingError() })
+      await showWorkspaceMissingDialog(targetWorkspace)
       return null
     }
     const targetDoc = (docId ?? '').trim()

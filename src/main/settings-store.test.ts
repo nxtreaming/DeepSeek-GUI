@@ -65,24 +65,31 @@ describe('JsonSettingsStore', () => {
     expect(clamped.checkpointCleanup.intervalDays).toBe(10)
   })
 
-  it('creates a default write workspace with welcome.md', async () => {
+  it('creates the app-managed default workspaces and welcome file', async () => {
     const userDataDir = await mkdtemp(join(tmpdir(), 'ds-gui-settings-'))
+    const homeDir = await mkdtemp(join(tmpdir(), 'ds-gui-home-'))
 
-    const store = new JsonSettingsStore(userDataDir)
-    const loaded = await store.load()
+    await withMockedHome(homeDir, async ({ JsonSettingsStore: Store }) => {
+      const store = new Store(userDataDir)
+      const loaded = await store.load()
 
-    expect(loaded.write.defaultWorkspaceRoot).toContain('.kun')
-    expect(loaded.write.workspaces).toContain(loaded.write.defaultWorkspaceRoot)
-    expect(loaded.write.inlineCompletion.enabled).toBe(true)
-    expect(loaded.write.inlineCompletion.retrievalEnabled).toBe(true)
-    expect(loaded.write.inlineCompletion.longCompletionEnabled).toBe(true)
-    expect(loaded.provider.baseUrl).toBe('https://api.deepseek.com')
-    expect(loaded.write.inlineCompletion.apiKey).toBe('')
-    expect(loaded.write.inlineCompletion.baseUrl).toBe('')
-    expect(loaded.write.inlineCompletion.inheritModel).toBe(true)
-    expect(loaded.write.inlineCompletion.model).toBe('deepseek-v4-flash')
-    expect(loaded.write.inlineCompletion.longMaxTokens).toBe(256)
-    expect(await readFile(join(loaded.write.defaultWorkspaceRoot, 'welcome.md'), 'utf8')).toContain('Welcome to Write')
+      expect(loaded.write.defaultWorkspaceRoot).toContain('.kun')
+      expect(loaded.write.workspaces).toContain(loaded.write.defaultWorkspaceRoot)
+      expect(loaded.write.inlineCompletion.enabled).toBe(true)
+      expect(loaded.write.inlineCompletion.retrievalEnabled).toBe(true)
+      expect(loaded.write.inlineCompletion.longCompletionEnabled).toBe(true)
+      expect(loaded.provider.baseUrl).toBe('https://api.deepseek.com')
+      expect(loaded.write.inlineCompletion.apiKey).toBe('')
+      expect(loaded.write.inlineCompletion.baseUrl).toBe('')
+      expect(loaded.write.inlineCompletion.inheritModel).toBe(true)
+      expect(loaded.write.inlineCompletion.model).toBe('deepseek-v4-flash')
+      expect(loaded.write.inlineCompletion.longMaxTokens).toBe(256)
+      expect((await stat(loaded.workspaceRoot)).isDirectory()).toBe(true)
+      expect((await stat(loaded.write.defaultWorkspaceRoot)).isDirectory()).toBe(true)
+      expect((await stat(loaded.conversationWorkspaceRoot)).isDirectory()).toBe(true)
+      expect(await readFile(join(loaded.write.defaultWorkspaceRoot, 'welcome.md'), 'utf8'))
+        .toContain('Welcome to Write')
+    })
   })
 
   it('preserves the pro write completion model', async () => {
@@ -293,34 +300,67 @@ describe('JsonSettingsStore', () => {
     expect(await readFile(currentSettingsPath, 'utf8')).toContain('sk-legacy-provider')
   })
 
-  it('creates the configured code workspace on load', async () => {
+  it('preserves a missing configured code workspace without creating it', async () => {
     const userDataDir = await mkdtemp(join(tmpdir(), 'ds-gui-settings-'))
+    const homeDir = await mkdtemp(join(tmpdir(), 'ds-gui-home-'))
     const workspaceRoot = join(userDataDir, 'missing-workspace')
+    const writeWorkspaceRoot = join(userDataDir, 'missing-write-workspace')
+    const conversationWorkspaceRoot = join(userDataDir, 'missing-conversation-workspace')
+    const clawChannelWorkspaceRoot = join(userDataDir, 'missing-claw-channel')
+    const clawConversationWorkspaceRoot = join(userDataDir, 'missing-claw-conversation')
 
     await writeFile(
       join(userDataDir, 'deepseek-gui-settings.json'),
       JSON.stringify({
         version: 1,
-        workspaceRoot
+        workspaceRoot,
+        conversationWorkspaceRoot,
+        write: {
+          defaultWorkspaceRoot: writeWorkspaceRoot,
+          activeWorkspaceRoot: writeWorkspaceRoot,
+          workspaces: [writeWorkspaceRoot]
+        },
+        claw: {
+          channels: [{
+            id: 'channel-1',
+            provider: 'feishu',
+            workspaceRoot: clawChannelWorkspaceRoot,
+            conversations: [{
+              id: 'conversation-1',
+              chatId: 'chat-1',
+              latestMessageId: 'message-1',
+              workspaceRoot: clawConversationWorkspaceRoot
+            }]
+          }]
+        }
       }),
       'utf8'
     )
 
-    const store = new JsonSettingsStore(userDataDir)
-    const loaded = await store.load()
+    await withMockedHome(homeDir, async ({ JsonSettingsStore: Store }) => {
+      const store = new Store(userDataDir)
+      const loaded = await store.load()
 
-    expect(loaded.workspaceRoot).toBe(workspaceRoot)
-    expect((await stat(workspaceRoot)).isDirectory()).toBe(true)
+      expect(loaded.workspaceRoot).toBe(workspaceRoot)
+      expect(loaded.write.defaultWorkspaceRoot).toBe(writeWorkspaceRoot)
+      expect(loaded.conversationWorkspaceRoot).toBe(conversationWorkspaceRoot)
+      expect(loaded.claw.channels[0]?.workspaceRoot).toBe(clawChannelWorkspaceRoot)
+      expect(loaded.claw.channels[0]?.conversations[0]?.workspaceRoot).toBe(clawConversationWorkspaceRoot)
+      await expect(stat(workspaceRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(stat(writeWorkspaceRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(stat(conversationWorkspaceRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(stat(clawChannelWorkspaceRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(stat(clawConversationWorkspaceRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+      expect((await stat(join(homeDir, '.kun', 'default_workspace'))).isDirectory()).toBe(true)
+      expect((await stat(join(homeDir, '.kun', 'write_workspace'))).isDirectory()).toBe(true)
+    })
   })
 
-  it('falls back to the default code workspace when the configured workspace is unavailable on load', async () => {
+  it('does not replace an unavailable configured workspace on load', async () => {
     const userDataDir = await mkdtemp(join(tmpdir(), 'ds-gui-settings-'))
-    const homeDir = await mkdtemp(join(tmpdir(), 'ds-gui-home-'))
     const blockedParent = join(userDataDir, 'disconnected-drive')
     const unavailableWorkspaceRoot = join(blockedParent, 'project')
     const settingsPath = join(userDataDir, 'kun-settings.json')
-    const defaultWorkspaceRoot = join(homeDir, '.kun', 'default_workspace')
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
 
     await writeFile(blockedParent, 'not a directory', 'utf8')
     await writeFile(
@@ -332,27 +372,15 @@ describe('JsonSettingsStore', () => {
       'utf8'
     )
 
-    await withMockedHome(homeDir, async ({ JsonSettingsStore: Store }) => {
-      const store = new Store(userDataDir)
-      const loaded = await store.load()
-
-      expect(loaded.workspaceRoot).toBe(defaultWorkspaceRoot)
-      expect((await stat(defaultWorkspaceRoot)).isDirectory()).toBe(true)
-    })
+    const store = new JsonSettingsStore(userDataDir)
+    const loaded = await store.load()
 
     const persisted = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>
-    expect(persisted.workspaceRoot).toBe(defaultWorkspaceRoot)
-    expect(warn).toHaveBeenCalledWith(
-      '[kun-gui] Workspace root is unavailable; falling back to default workspace.',
-      expect.objectContaining({
-        workspaceRoot: unavailableWorkspaceRoot,
-        defaultWorkspaceRoot,
-        code: expect.stringMatching(/^(ENOENT|ENOTDIR|EACCES|EPERM)$/)
-      })
-    )
+    expect(loaded.workspaceRoot).toBe(unavailableWorkspaceRoot)
+    expect(persisted.workspaceRoot).toBe(unavailableWorkspaceRoot)
   })
 
-  it('does not hide default code workspace creation failures', async () => {
+  it('does not hide app-managed default workspace creation failures', async () => {
     const userDataDir = await mkdtemp(join(tmpdir(), 'ds-gui-settings-'))
     const homeRoot = await mkdtemp(join(tmpdir(), 'ds-gui-home-parent-'))
     const homeDir = join(homeRoot, 'home-is-a-file')

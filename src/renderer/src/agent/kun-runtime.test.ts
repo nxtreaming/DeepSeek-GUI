@@ -103,6 +103,23 @@ describe('KunRuntimeProvider', () => {
     )
   })
 
+  it('rejects thread creation before the runtime request when the workspace is missing', async () => {
+    const runtimeRequest = vi.fn(async () => ({ ok: true, status: 200, body: '{}' }))
+    const alertDialog = vi.fn(async () => undefined)
+    installDsGui({
+      runtimeRequest,
+      workspaceDirectoryExists: vi.fn(async () => false),
+      alertDialog
+    })
+    const provider = new KunRuntimeProvider()
+
+    await expect(provider.createThread({ workspace: 'E:\\missing-project' }))
+      .rejects.toThrow(/working directory/i)
+
+    expect(runtimeRequest).not.toHaveBeenCalled()
+    expect(alertDialog).not.toHaveBeenCalled()
+  })
+
   it('starts MCP OAuth authorization through the authenticated runtime bridge', async () => {
     const runtimeRequest = vi.fn(async () => ({
       ok: true,

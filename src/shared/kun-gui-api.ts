@@ -275,6 +275,11 @@ export type ConfirmDialogOptions = {
   confirmLabel?: string
   cancelLabel?: string
 }
+export type AlertDialogOptions = {
+  message: string
+  detail?: string
+  buttonLabel?: string
+}
 /** Which legacy install a set of importable conversations came from. */
 export type LegacySessionSourceKind = 'kun' | 'coreagent' | 'custom'
 export type LegacySessionDetectedSource = {
@@ -401,9 +406,11 @@ export type KunGuiApi = ExtensionIpcApi & {
   pollCodexAuth: (deviceCode: string, userCode: string) => Promise<CodexAuthPollResult>
   startCodexBrowserAuth: () => Promise<CodexBrowserAuthResult>
   pickWorkspaceDirectory: (defaultPath?: string) => Promise<WorkspacePickResult>
+  workspaceDirectoryExists: (workspaceRoot: string) => Promise<boolean>
   pickLocalFiles: (defaultPath?: string) => Promise<LocalFilesPickResult>
   /** 在对话工作目录根下创建一个时间戳子目录作为新对话的工作目录。 */
   createConversationWorkspace: (root?: string) => Promise<ConversationWorkspaceCreateResult>
+  alertDialog: (options: AlertDialogOptions) => Promise<void>
   confirmDialog: (options: ConfirmDialogOptions) => Promise<boolean>
   /** Detect importable conversations from a previous DeepSeek GUI install. */
   detectLegacySessions: () => Promise<LegacySessionDetectResult>

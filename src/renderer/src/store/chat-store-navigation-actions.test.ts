@@ -214,6 +214,82 @@ describe('chat-store navigation workspace selection', () => {
     expect(harness.state.activeThreadId).toBe('thr_default')
   })
 
+  it('selectWorkspaceRoot does not warn before the user sends a message', async () => {
+    const setSettings = vi.fn(async () => ({ workspaceRoot: '/Volumes/missing/project' }))
+    const alertDialog = vi.fn(async () => undefined)
+    const workspaceDirectoryExists = vi.fn(async () => false)
+    vi.stubGlobal('window', {
+      kunGui: {
+        setSettings,
+        workspaceDirectoryExists,
+        alertDialog
+      }
+    })
+    const harness = buildHarness()
+
+    await expect(harness.actions.selectWorkspaceRoot('/Volumes/missing/project'))
+      .resolves.toBe('/Volumes/missing/project')
+
+    expect(setSettings).toHaveBeenCalledOnce()
+    expect(workspaceDirectoryExists).not.toHaveBeenCalled()
+    expect(alertDialog).not.toHaveBeenCalled()
+    expect(harness.state.workspaceRoot).toBe('/Volumes/missing/project')
+  })
+
+  it('keeps a missing current workspace without warning during boot', async () => {
+    const alertDialog = vi.fn(async () => undefined)
+    const workspaceDirectoryExists = vi.fn(async () => false)
+    const setSettings = vi.fn()
+    vi.stubGlobal('window', {
+      kunGui: {
+        getSettings: vi.fn(async () => ({
+          workspaceRoot: 'E:\\missing-project',
+          write: {
+            defaultWorkspaceRoot: '~/.kun/write_workspace',
+            activeWorkspaceRoot: '~/.kun/write_workspace',
+            workspaces: []
+          },
+          claw: { channels: [] },
+          theme: 'dark',
+          uiFontScale: 1,
+          chatContentMaxWidthPx: 896,
+          locale: 'en',
+          agents: { kun: { apiKey: 'test-key', model: 'deepseek-v4-pro', baseUrl: '' } },
+          disabledSkillIds: []
+        })),
+        setSettings,
+        workspaceDirectoryExists,
+        alertDialog
+      }
+    })
+    const harness = buildHarness()
+
+    await harness.actions.boot()
+
+    expect(harness.state.workspaceRoot).toBe('E:\\missing-project')
+    expect(setSettings).not.toHaveBeenCalled()
+    expect(workspaceDirectoryExists).not.toHaveBeenCalled()
+    expect(alertDialog).not.toHaveBeenCalled()
+    expect(harness.state.error).toBeNull()
+  })
+
+  it('warns when creating Write or Design threads for a missing workspace', async () => {
+    const alertDialog = vi.fn(async () => undefined)
+    vi.stubGlobal('window', {
+      kunGui: {
+        workspaceDirectoryExists: vi.fn(async () => false),
+        alertDialog
+      }
+    })
+    const harness = buildHarness()
+
+    await expect(harness.actions.createWriteThread('/Volumes/missing/project')).resolves.toBeNull()
+    await expect(harness.actions.createDesignThread('/Volumes/missing/project', 'screen-1')).resolves.toBeNull()
+
+    expect(alertDialog).toHaveBeenCalledTimes(2)
+    expect(harness.state.error).toBeTruthy()
+  })
+
   it('openCode does not keep a registered design thread active in Code mode', async () => {
     const storage = new MemoryStorage()
     saveDesignThreadRegistry(

@@ -1,6 +1,11 @@
 import type { ReviewTarget } from '../agent/types'
 import { getProvider } from '../agent/registry'
 import { rendererRuntimeClient } from '../agent/runtime-client'
+import {
+  showWorkspaceMissingDialog,
+  workspaceDirectoryExists,
+  workspaceMissingError
+} from '../lib/workspace-availability'
 import i18n from '../i18n'
 import { applyTheme, applyUiFontScale } from '../lib/apply-theme'
 import { formatWorkspacePickerError } from '../lib/format-workspace-picker-error'
@@ -182,6 +187,11 @@ export function createThreadActions(
         normalizeWorkspaceRoot(settings.workspaceRoot)
       if (!workspaceRoot) {
         await get().chooseWorkspace({ createThreadAfter: true })
+        return
+      }
+      if (!(await workspaceDirectoryExists(workspaceRoot))) {
+        set({ error: workspaceMissingError() })
+        await showWorkspaceMissingDialog(workspaceRoot)
         return
       }
       const codeWorkspaceRoots = rememberCodeWorkspaceRoots(get().codeWorkspaceRoots, [workspaceRoot])
@@ -612,6 +622,23 @@ export function createThreadActions(
     if (get().runtimeConnection !== 'ready') {
       set({ error: i18n.t('common:runtimeActionNeedsConnection') })
       return false
+    }
+    if (get().route !== 'claw') {
+      const state = get()
+      const activeThread = state.activeThreadId
+        ? state.threads.find((thread) => thread.id === state.activeThreadId) ?? null
+        : null
+      let workspaceRoot = state.route === 'write'
+        ? await readActiveWriteWorkspace(state.workspaceRoot)
+        : normalizeWorkspaceRoot(activeThread?.workspace)
+      if (!workspaceRoot) {
+        workspaceRoot = normalizeWorkspaceRoot((await rendererRuntimeClient.getSettings()).workspaceRoot)
+      }
+      if (workspaceRoot && !(await workspaceDirectoryExists(workspaceRoot))) {
+        set({ error: workspaceMissingError() })
+        await showWorkspaceMissingDialog(workspaceRoot)
+        return false
+      }
     }
     const p = getProvider()
     if (get().route === 'write') {

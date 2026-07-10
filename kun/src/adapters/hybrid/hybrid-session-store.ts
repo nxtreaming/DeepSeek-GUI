@@ -64,9 +64,16 @@ export class HybridSessionStore implements SessionStore {
   }
 
   async highestSeq(threadId: string): Promise<number> {
-    const indexed = await this.index.getEventSeqHighWater(threadId)
-    if (indexed !== null) return indexed
-    return this.delegate.highestSeq(threadId)
+    // JSONL is the canonical event log. An interruption after its append but
+    // before the best-effort SQLite note leaves the index behind; trusting the
+    // index alone would reuse that sequence and make SSE skip the durable
+    // event. Keep the index as a fast hint, but never let it lower the file
+    // high-water mark.
+    const [indexed, durable] = await Promise.all([
+      this.index.getEventSeqHighWater(threadId).catch(() => null),
+      this.delegate.highestSeq(threadId)
+    ])
+    return Math.max(indexed ?? 0, durable)
   }
 
   async loadUsageRecords(options?: { threadId?: string }): Promise<SessionUsageRecord[]> {

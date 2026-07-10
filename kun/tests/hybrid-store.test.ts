@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { appendFile, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -149,6 +149,23 @@ describe('HybridThreadStore', () => {
         usage: { totalTokens: 25, turns: 1 }
       }
     ])
+  })
+
+  it('uses the durable JSONL high-water when SQLite lags after an append', async () => {
+    const { threadStore, sessionStore } = await createHybridStores()
+    const record = await seedThreadWithMessage(threadStore, sessionStore, 'high water recovery')
+    await sessionStore.appendEvent(record.id, {
+      kind: 'heartbeat', seq: 1, timestamp: '2026-06-04T00:00:01.000Z', threadId: record.id
+    })
+    // Simulate a process death after JSONL append but before the Hybrid index
+    // hook. The file is canonical and must prevent seq=2 from being reused.
+    await appendFile(
+      join(dataDir, 'threads', record.id, 'events.jsonl'),
+      `${JSON.stringify({ kind: 'heartbeat', seq: 2, timestamp: '2026-06-04T00:00:02.000Z', threadId: record.id })}\n`,
+      'utf8'
+    )
+
+    await expect(sessionStore.highestSeq(record.id)).resolves.toBe(2)
   })
 
   it('recovers turn attachment ids from user messages when metadata is stripped', async () => {

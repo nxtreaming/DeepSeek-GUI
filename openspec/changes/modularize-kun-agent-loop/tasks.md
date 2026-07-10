@@ -4,7 +4,7 @@
   failures caused by concurrent work from the agent-loop baseline.
 - [x] 1.2 Correct the sandbox expectation in the existing shell-runtime test by
   making its intentionally unsafe fixture explicit.
-- [ ] 1.3 Add deterministic transcript fixture utilities that normalize unstable
+- [x] 1.3 Add deterministic transcript fixture utilities that normalize unstable
   values and collect model requests, events, history, thread state, usage, and
   tool invocation order.
 - [ ] 1.4 Characterize normal, tool, approval/user-input, cancellation/deletion,

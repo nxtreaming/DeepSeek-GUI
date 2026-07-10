@@ -367,6 +367,16 @@ describe('cli', () => {
       '--host', '0.0.0.0',
       '--insecure'
     ])).toThrow(/loopback host/)
+    expect(() => parseServeOptions([
+      '--data-dir', '/tmp/kun',
+      '--host', '127.evil.example',
+      '--insecure'
+    ])).toThrow(/loopback host/)
+    expect(() => parseServeOptions([
+      '--data-dir', '/tmp/kun',
+      '--host', 'localhost',
+      '--insecure'
+    ])).toThrow(/loopback host/)
   })
 
   it('parses flags in --key=value form', () => {

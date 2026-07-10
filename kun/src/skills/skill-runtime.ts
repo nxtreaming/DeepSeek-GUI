@@ -1,12 +1,15 @@
-import { type Dirent } from 'node:fs'
-import { readdir, readFile, stat } from 'node:fs/promises'
-import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path'
+import { constants, type Dirent } from 'node:fs'
+import { open, readdir, realpath, stat, type FileHandle } from 'node:fs/promises'
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { z } from 'zod'
 import type { SkillsCapabilityConfig } from '../contracts/capabilities.js'
 
 const DEFAULT_ACTIVE_LIMIT = 3
 const DEFAULT_INSTRUCTION_BUDGET_BYTES = 24_000
 const DEFAULT_CATALOG_BUDGET_BYTES = 8_000
+const MAX_SKILL_PACKAGES_PER_ROOT = 64
+const MAX_SKILL_MANIFEST_BYTES = 64 * 1024
+const MAX_SKILL_ENTRY_BYTES = 256 * 1024
 const WORKSPACE_SKILL_RELATIVE_DIRS = [
   '.agents/skills',
   '.claude/skills',
@@ -16,20 +19,25 @@ const WORKSPACE_SKILL_RELATIVE_DIRS = [
 ] as const
 
 const SkillTriggerManifest = z.object({
-  commands: z.array(z.string().min(1)).default([]),
-  promptPatterns: z.array(z.string().min(1)).default([]),
-  fileTypes: z.array(z.string().min(1)).default([])
+  commands: z.array(z.string().min(1).max(256)).max(16).default([]),
+  // Prompt patterns intentionally use literal case-insensitive substring
+  // matching. JavaScript regular expressions from workspace manifests can
+  // catastrophically backtrack on every turn and block the runtime event loop.
+  promptPatterns: z.array(z.string().min(1).max(256).refine(isSafePromptPattern, {
+    message: 'promptPatterns must be literal text, not a regular expression'
+  })).max(16).default([]),
+  fileTypes: z.array(z.string().min(1).max(64)).max(16).default([])
 }).default({ commands: [], promptPatterns: [], fileTypes: [] })
 
 export const SkillManifest = z.object({
-  id: z.string().min(1).optional(),
-  name: z.string().min(1),
-  description: z.string().optional(),
-  version: z.string().default('0.0.0'),
-  entry: z.string().min(1).default('SKILL.md'),
+  id: z.string().min(1).max(128).optional(),
+  name: z.string().min(1).max(256),
+  description: z.string().max(4_000).optional(),
+  version: z.string().max(128).default('0.0.0'),
+  entry: z.string().min(1).max(1_024).default('SKILL.md'),
   triggers: SkillTriggerManifest,
-  allowedTools: z.array(z.string().min(1)).default([]),
-  assets: z.array(z.string().min(1)).default([]),
+  allowedTools: z.array(z.string().min(1).max(128)).max(64).default([]),
+  assets: z.array(z.string().min(1).max(1_024)).max(32).default([]),
   priority: z.number().int().default(0)
 }).strict()
 export type SkillManifest = z.infer<typeof SkillManifest>
@@ -352,7 +360,7 @@ export class SkillRuntime {
       return { skills: cached.skills, validationErrors: cached.validationErrors }
     }
     const loaded = roots.length > 0
-      ? await discoverSkills({ ...this.config, roots })
+      ? await discoverSkills({ ...this.config, roots }, { workspaceRoot })
       : { skills: [], validationErrors: [] }
     this.workspaceSkillCache.delete(workspaceRoot)
     this.workspaceSkillCache.set(workspaceRoot, { rootsKey, ...loaded })
@@ -406,7 +414,7 @@ function normalizeRoot(path: string | undefined): string {
 function isSameOrInside(parent: string, target: string): boolean {
   if (!parent || !target) return false
   const rel = relative(parent, target)
-  return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel))
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }
 
 function skillVisibleForWorkspace(
@@ -435,10 +443,16 @@ function looksLikeWorkspaceSkillRoot(root: string): boolean {
 }
 
 async function existingWorkspaceSkillRoots(workspaceRoot: string): Promise<string[]> {
+  const resolvedWorkspace = await realpath(workspaceRoot).catch(() => '')
+  if (!resolvedWorkspace) return []
   const roots: string[] = []
   for (const relativeDir of WORKSPACE_SKILL_RELATIVE_DIRS) {
     const root = resolve(workspaceRoot, ...relativeDir.split('/'))
-    if (await exists(root)) roots.push(root)
+    const resolvedRoot = await realpath(root).catch(() => '')
+    // Workspace discovery is untrusted repository content. A symlinked
+    // .claude/.kun skill root must not import a package from elsewhere on the
+    // user's disk simply because it sits under a familiar lexical path.
+    if (resolvedRoot && isSameOrInside(resolvedWorkspace, resolvedRoot)) roots.push(root)
   }
   return roots
 }
@@ -458,7 +472,10 @@ function filterBlockedSkills(skills: LoadedSkill[], blockedIds: readonly string[
   return skills.filter((skill) => !blocked.has(skill.id))
 }
 
-async function discoverSkills(config: SkillsCapabilityConfig): Promise<{
+async function discoverSkills(
+  config: SkillsCapabilityConfig,
+  options: { workspaceRoot?: string } = {}
+): Promise<{
   skills: LoadedSkill[]
   validationErrors: Array<{ root: string; message: string }>
 }> {
@@ -473,7 +490,7 @@ async function discoverSkills(config: SkillsCapabilityConfig): Promise<{
   // Scan project roots (priority over global — loaded first)
   for (const rawRoot of config.roots) {
     const root = resolve(rawRoot)
-    const candidates = await packageCandidates(root).catch((error) => {
+    const candidates = await packageCandidates(root, options.workspaceRoot).catch((error) => {
       validationErrors.push({ root, message: errorMessage(error) })
       return []
     })
@@ -512,15 +529,24 @@ async function discoverSkills(config: SkillsCapabilityConfig): Promise<{
   return { skills: [...unique.values()].sort((a, b) => a.id.localeCompare(b.id)), validationErrors }
 }
 
-async function packageCandidates(root: string): Promise<string[]> {
+async function packageCandidates(root: string, workspaceRoot?: string): Promise<string[]> {
+  const resolvedRoot = await realpath(root)
+  const resolvedWorkspace = workspaceRoot ? await realpath(workspaceRoot) : ''
+  if (resolvedWorkspace && !isSameOrInside(resolvedWorkspace, resolvedRoot)) return []
   const candidates = new Set<string>()
   if (await exists(join(root, 'skill.json')) || await exists(join(root, 'SKILL.md'))) {
     candidates.add(root)
   }
   const entries = await readdir(root, { withFileTypes: true })
-  for (const entry of entries) {
+  for (const entry of entries
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .slice(0, MAX_SKILL_PACKAGES_PER_ROOT)) {
     const dir = join(root, entry.name)
     if (!(await entryIsDirectory(entry, dir))) continue
+    if (resolvedWorkspace) {
+      const resolvedDir = await realpath(dir).catch(() => '')
+      if (!resolvedDir || !isSameOrInside(resolvedWorkspace, resolvedDir)) continue
+    }
     if (await exists(join(dir, 'skill.json')) || await exists(join(dir, 'SKILL.md'))) {
       candidates.add(dir)
     }
@@ -549,9 +575,12 @@ async function entryIsDirectory(entry: Dirent, path: string): Promise<boolean> {
 async function loadSkillPackage(root: string, allowLegacy: boolean, source: 'project' | 'global'): Promise<LoadedSkill | null> {
   const manifestPath = join(root, 'skill.json')
   if (await exists(manifestPath)) {
-    const manifest = SkillManifest.parse(JSON.parse(await readFile(manifestPath, 'utf8')))
-    const entryPath = resolve(root, manifest.entry)
-    const entry = await readFile(entryPath, 'utf8')
+    const packageRoot = await realpath(root)
+    const safeManifestPath = await resolveSkillPackageFile(packageRoot, 'skill.json')
+    const manifest = SkillManifest.parse(JSON.parse(await readSkillText(safeManifestPath, MAX_SKILL_MANIFEST_BYTES, 'skill manifest')))
+    const entryPath = await resolveSkillPackageFile(packageRoot, manifest.entry)
+    const entry = await readSkillText(entryPath, MAX_SKILL_ENTRY_BYTES, 'skill entry')
+    const assets = await Promise.all(manifest.assets.map((asset) => resolveSkillPackageFile(packageRoot, asset)))
     return {
       id: slug(manifest.id ?? manifest.name),
       name: manifest.name,
@@ -562,7 +591,7 @@ async function loadSkillPackage(root: string, allowLegacy: boolean, source: 'pro
       entry,
       triggers: manifest.triggers,
       allowedTools: manifest.allowedTools,
-      assets: manifest.assets.map((asset) => resolve(root, asset)),
+      assets,
       priority: manifest.priority,
       legacy: false,
       source,
@@ -571,7 +600,9 @@ async function loadSkillPackage(root: string, allowLegacy: boolean, source: 'pro
   if (!allowLegacy) return null
   const legacyPath = join(root, 'SKILL.md')
   if (!await exists(legacyPath)) return null
-  const entry = await readFile(legacyPath, 'utf8')
+  const packageRoot = await realpath(root)
+  const safeLegacyPath = await resolveSkillPackageFile(packageRoot, 'SKILL.md')
+  const entry = await readSkillText(safeLegacyPath, MAX_SKILL_ENTRY_BYTES, 'legacy skill entry')
   const frontmatter = readFrontmatter(entry)
   const folderName = basename(root)
   const name = frontmatter.name || folderName
@@ -581,7 +612,7 @@ async function loadSkillPackage(root: string, allowLegacy: boolean, source: 'pro
     description: frontmatter.description,
     version: 'legacy',
     root,
-    entryPath: legacyPath,
+    entryPath: safeLegacyPath,
     entry,
     triggers: { commands: [], promptPatterns: [], fileTypes: [] },
     allowedTools: [],
@@ -589,6 +620,40 @@ async function loadSkillPackage(root: string, allowLegacy: boolean, source: 'pro
     priority: 0,
     legacy: true,
     source,
+  }
+}
+
+async function resolveSkillPackageFile(packageRoot: string, value: string): Promise<string> {
+  if (isAbsolute(value)) throw new Error(`skill package path must be relative: ${value}`)
+  const lexical = resolve(packageRoot, value)
+  if (!isSameOrInside(packageRoot, lexical)) {
+    throw new Error(`skill package path escapes its root: ${value}`)
+  }
+  const resolved = await realpath(lexical)
+  if (!isSameOrInside(packageRoot, resolved)) {
+    throw new Error(`skill package path resolves outside its root: ${value}`)
+  }
+  return resolved
+}
+
+async function readSkillText(path: string, maxBytes: number, label: string): Promise<string> {
+  let handle: FileHandle | undefined
+  try {
+    handle = await open(path, constants.O_RDONLY)
+    const fileStat = await handle.stat()
+    if (!fileStat.isFile()) throw new Error(`${label} is not a regular file`)
+    if (fileStat.size > maxBytes) throw new Error(`${label} exceeds ${maxBytes} byte limit`)
+    const buffer = Buffer.allocUnsafe(maxBytes + 1)
+    let offset = 0
+    while (offset < buffer.byteLength) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.byteLength - offset, offset)
+      if (bytesRead === 0) break
+      offset += bytesRead
+    }
+    if (offset > maxBytes) throw new Error(`${label} exceeds ${maxBytes} byte limit`)
+    return buffer.subarray(0, offset).toString('utf8')
+  } finally {
+    if (handle) await handle.close().catch(() => undefined)
   }
 }
 
@@ -670,11 +735,13 @@ function explicitSkillMention(skill: LoadedSkill, prompt: string): string | unde
 }
 
 function safePatternMatches(pattern: string, prompt: string): boolean {
-  try {
-    return new RegExp(pattern, 'i').test(prompt)
-  } catch {
-    return false
-  }
+  return prompt.toLocaleLowerCase().includes(pattern.toLocaleLowerCase())
+}
+
+function isSafePromptPattern(pattern: string): boolean {
+  // Keep matching linear and predictable. File types and explicit commands
+  // cover the structured cases that previously tempted manifests to use regex.
+  return !/[\\^$.*+?()[\]{}|]/.test(pattern)
 }
 
 function fileTypesFrom(paths: readonly string[], prompt: string): Set<string> {

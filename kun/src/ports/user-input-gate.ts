@@ -34,9 +34,21 @@ export type UserInputResolution =
   | { status: 'submitted'; answers: UserInputAnswer[] }
   | { status: 'cancelled'; answers?: UserInputAnswer[] }
 
+/**
+ * Exclusive reservation used by the HTTP route to persist a resolution event
+ * before settling the waiter. While reserved, cancellation cannot win between
+ * event persistence and promise resolution.
+ */
+export type UserInputResolutionClaim = {
+  request: UserInputRequest
+  resolve(resolution: UserInputResolution): boolean
+  release(): boolean
+}
+
 export interface UserInputGate {
   request(input: UserInputRequest): Promise<UserInputResolution>
   get(inputId: string): UserInputRequest | undefined
+  claimResolution(inputId: string): UserInputResolutionClaim | undefined
   resolve(inputId: string, resolution: UserInputResolution): boolean
   pending(threadId?: string): UserInputRequest[]
   reset(): void

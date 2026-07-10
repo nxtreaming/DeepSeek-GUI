@@ -64,4 +64,40 @@ describe('resolveUserInput', () => {
       })
     )
   })
+
+  it('keeps an accepted submission authoritative while its resolved event is persisted', async () => {
+    const gate = new InMemoryUserInputGate()
+    const pending = gate.request({
+      id: 'input_1',
+      threadId: 'thread_1',
+      turnId: 'turn_1',
+      itemId: 'item_input_1',
+      prompt: 'Continue?',
+      questions: []
+    })
+    let releaseRecord!: () => void
+    const recordStarted = new Promise<void>((resolve) => { releaseRecord = resolve })
+    const events = {
+      record: vi.fn(async () => recordStarted)
+    } as unknown as RuntimeEventRecorder
+
+    const responsePromise = resolveUserInput({
+      inputId: 'input_1',
+      request: new Request('http://127.0.0.1/v1/user-inputs/input_1', {
+        method: 'POST',
+        body: JSON.stringify({ answers: [] })
+      }),
+      gate,
+      events
+    })
+    await vi.waitFor(() => expect(events.record).toHaveBeenCalledTimes(1))
+
+    // A turn abort racing after validation must not supersede the submission
+    // whose event is already in flight.
+    expect(gate.resolve('input_1', { status: 'cancelled' })).toBe(false)
+    releaseRecord()
+
+    await expect(responsePromise).resolves.toMatchObject({ status: 200 })
+    await expect(pending).resolves.toEqual({ status: 'submitted', answers: [] })
+  })
 })

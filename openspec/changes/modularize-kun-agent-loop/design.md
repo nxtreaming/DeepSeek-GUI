@@ -119,6 +119,22 @@ Snapshotting only final assistant text was rejected because it misses the
 regressions most likely during extraction: cache prefix drift, tool ordering,
 usage loss, duplicate finalization, and stale history writes.
 
+### 6. Arm interactive gates before publishing their request events
+
+Approval and user-input gates SHALL be registered before their corresponding
+requested event becomes observable. A renderer can submit a decision while
+handling that event, so publication before registration can make an otherwise
+valid HTTP request appear unknown. User-input resolution additionally reserves
+the pending request while its resolved event is persisted, then settles the
+waiter only after that persistence succeeds. This keeps the event projection and
+the waiter outcome consistent when cancellation races with a submission.
+
+Reordering the HTTP route to resolve first was rejected because the loop could
+observe the settled promise before the route had persisted its resolved event,
+creating duplicate or out-of-order resolution events. Keeping the old
+publish-then-arm order was rejected because it permits deterministic 404s for
+fast subscribers.
+
 ## Risks / Trade-offs
 
 - [Revision state is lost on process restart] → Revisions fence only in-flight
@@ -133,6 +149,9 @@ usage loss, duplicate finalization, and stale history writes.
   delete, and error paths.
 - [Concurrent Design/SVG work overlaps the loop file] → Add new modules and tests
   first, use minimal hunks in shared files, and stage only owned paths/hunks.
+- [Interactive UI resolves a freshly published request immediately] → Arm the
+  approval or user-input gate before publication; reserve user-input settlement
+  until its resolved event has been persisted.
 - [A compatibility flag becomes permanent] → Limit it to developer/offline
   replay, do not expose it through UI or settings, set a removal task, and remove
   it after a release validates the extracted path.

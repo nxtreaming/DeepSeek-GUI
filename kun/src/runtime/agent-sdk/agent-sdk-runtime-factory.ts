@@ -46,6 +46,7 @@ import type { TurnItem } from '../../contracts/items.js'
 import type { ApprovalGate } from '../../ports/approval-gate.js'
 import { createApprovalRequest, type ApprovalRequest } from '../../domain/approval.js'
 import { makeUserInputItem } from '../../domain/item.js'
+import { awaitAbortableGate } from '../../services/interactive-gate.js'
 import {
   buildHistoryTranscript,
   DEFAULT_SDK_HISTORY_TRANSCRIPT_MAX_BYTES
@@ -139,30 +140,20 @@ export function resolveTurnPlanContext(
 export function waitForGate(
   gate: UserInputGate,
   request: UserInputRequest,
-  signal: AbortSignal
+  signal: AbortSignal,
+  armedPending?: Promise<UserInputResolution>
 ): Promise<UserInputResolution> {
-  const pending = gate.request(request)
+  const pending = armedPending ?? gate.request(request)
   if (signal.aborted) {
     gate.resolve(request.id, { status: 'cancelled' })
     return Promise.resolve({ status: 'cancelled' })
   }
-  return new Promise<UserInputResolution>((resolve, reject) => {
-    const onAbort = (): void => {
-      gate.resolve(request.id, { status: 'cancelled' })
-      signal.removeEventListener('abort', onAbort)
-      reject(new Error('cancelled while awaiting user input'))
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-    pending
-      .then((resolution) => {
-        signal.removeEventListener('abort', onAbort)
-        resolve(resolution)
-      })
-      .catch((error) => {
-        signal.removeEventListener('abort', onAbort)
-        reject(error)
-      })
-  })
+  return awaitAbortableGate(
+    pending,
+    signal,
+    () => { gate.resolve(request.id, { status: 'cancelled' }) },
+    'cancelled while awaiting user input'
+  )
 }
 
 export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSdkRuntime {
@@ -188,6 +179,16 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
     const gate = deps.userInputGate
     if (!gate) return undefined
     return async (input): Promise<UserInputResolution> => {
+      const request: UserInputRequest = {
+        id: input.id,
+        threadId,
+        turnId,
+        itemId: input.itemId,
+        prompt: input.prompt,
+        questions: input.questions
+      }
+      // Arm first so an event subscriber can immediately submit a response.
+      const pending = gate.request(request)
       const item = makeUserInputItem({
         id: input.itemId,
         threadId,
@@ -196,24 +197,26 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
         prompt: input.prompt,
         questions: input.questions
       })
-      await deps.turns.applyItem(threadId, item)
-      await deps.events.record({
-        kind: 'user_input_requested',
-        threadId,
-        turnId,
-        itemId: item.id,
-        inputId: input.id,
-        status: 'pending',
-        prompt: input.prompt,
-        questions: input.questions
-      })
+      try {
+        await deps.turns.applyItem(threadId, item)
+        await deps.events.record({
+          kind: 'user_input_requested',
+          threadId,
+          turnId,
+          itemId: item.id,
+          inputId: input.id,
+          status: 'pending',
+          prompt: input.prompt,
+          questions: input.questions
+        })
+      } catch (error) {
+        gate.resolve(input.id, { status: 'cancelled' })
+        void pending.catch(() => undefined)
+        throw error
+      }
       let resolution: UserInputResolution
       try {
-        resolution = await waitForGate(
-          gate,
-          { id: input.id, threadId, turnId, itemId: input.itemId, prompt: input.prompt, questions: input.questions },
-          signal
-        )
+        resolution = await waitForGate(gate, request, signal, pending)
       } catch {
         resolution = { status: 'cancelled' }
       }
@@ -248,35 +251,39 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
     signal: AbortSignal
   ): ((approval: ApprovalRequest) => Promise<'allow' | 'deny'>) => async (approval) => {
     if (approvalPolicy === 'never' || !deps.approvalGate) return 'deny'
-    await deps.events.record({
-      kind: 'approval_requested',
-      threadId: approval.threadId,
-      turnId: approval.turnId,
-      approvalId: approval.id,
-      toolName: approval.toolName,
-      status: 'pending',
-      approvalPolicy,
-      sandboxMode: sandboxMode ?? DEFAULT_SANDBOX_MODE,
-      summary: approval.summary
-    })
     const pending = deps.approvalGate.request(approval)
-    if (signal.aborted) {
-      deps.approvalGate.expire?.(approval.id, 'turn aborted while awaiting approval')
+    const cancelPendingApproval = (reason: string): void => {
+      if (!deps.approvalGate?.expire?.(approval.id, reason)) {
+        deps.approvalGate?.decide(approval.id, 'deny', reason)
+      }
+    }
+    try {
+      await deps.events.record({
+        kind: 'approval_requested',
+        threadId: approval.threadId,
+        turnId: approval.turnId,
+        approvalId: approval.id,
+        toolName: approval.toolName,
+        status: 'pending',
+        approvalPolicy,
+        sandboxMode: sandboxMode ?? DEFAULT_SANDBOX_MODE,
+        summary: approval.summary
+      })
+    } catch (error) {
+      cancelPendingApproval('failed to publish approval request')
+      void pending.catch(() => undefined)
+      throw error
+    }
+    try {
+      return await awaitAbortableGate(
+        pending,
+        signal,
+        () => { cancelPendingApproval('turn aborted while awaiting approval') },
+        'approval wait aborted'
+      )
+    } catch {
       return 'deny'
     }
-    return new Promise<'allow' | 'deny'>((resolve) => {
-      const onAbort = () => {
-        cleanup()
-        deps.approvalGate?.expire?.(approval.id, 'turn aborted while awaiting approval')
-        resolve('deny')
-      }
-      const cleanup = () => signal.removeEventListener('abort', onAbort)
-      signal.addEventListener('abort', onAbort, { once: true })
-      pending.then(
-        (decision) => { cleanup(); resolve(decision) },
-        () => { cleanup(); resolve('deny') }
-      )
-    })
   }
 
   const toolContext = (

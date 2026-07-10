@@ -46,19 +46,27 @@ async function resolveUserInputLocked(input: {
     const validation = validateAnswers(pending.questions, resolution.answers)
     if (validation) return ERRORS.validation(validation)
   }
-  await input.events.record({
-    kind: 'user_input_resolved',
-    threadId: pending.threadId,
-    turnId: pending.turnId,
-    itemId: pending.itemId,
-    inputId: pending.id,
-    status: resolution.status,
-    prompt: pending.prompt,
-    questions: pending.questions,
-    ...(resolution.status === 'submitted' ? { answers: resolution.answers } : {})
-  })
-  const ok = input.gate.resolve(input.inputId, resolution)
-  if (!ok) {
+  const claim = input.gate.claimResolution(input.inputId)
+  if (!claim) {
+    return ERRORS.conflict(`user input already resolved: ${input.inputId}`)
+  }
+  try {
+    await input.events.record({
+      kind: 'user_input_resolved',
+      threadId: claim.request.threadId,
+      turnId: claim.request.turnId,
+      itemId: claim.request.itemId,
+      inputId: claim.request.id,
+      status: resolution.status,
+      prompt: claim.request.prompt,
+      questions: claim.request.questions,
+      ...(resolution.status === 'submitted' ? { answers: resolution.answers } : {})
+    })
+  } catch (error) {
+    claim.release()
+    throw error
+  }
+  if (!claim.resolve(resolution)) {
     return ERRORS.conflict(`user input already resolved: ${input.inputId}`)
   }
   return jsonResponse({

@@ -22,6 +22,7 @@ import type { UsageService } from '../services/usage-service.js'
 import { TurnCapacityError, type TurnService } from '../services/turn-service.js'
 import type { RuntimeEventRecorder } from '../services/runtime-event-recorder.js'
 import { rewriteItemHistoryWithRetry } from '../services/history-commit-coordinator.js'
+import { awaitAbortableGate } from '../services/interactive-gate.js'
 import { withThreadStoreMutation } from '../services/thread-mutation-coordinator.js'
 import type { PipelineStage } from '../contracts/events.js'
 import type { RuntimeErrorSeverity } from '../contracts/errors.js'
@@ -2204,23 +2205,39 @@ export class AgentLoop {
       ...(this.opts.artifactStore ? { artifactStore: this.opts.artifactStore } : {}),
       abortSignal: input.signal,
       awaitApproval: async (approval) => {
-        await this.opts.events.record({
-          kind: 'approval_requested',
-          threadId: approval.threadId,
-          turnId: approval.turnId,
-          approvalId: approval.id,
-          toolName: approval.toolName,
-          status: 'pending',
-          approvalPolicy: input.approvalPolicy,
-          sandboxMode: input.sandboxMode,
-          summary: approval.summary
-        })
-        return awaitAbortableApproval(
-          this.opts.approvalGate.request(approval),
+        // Arm the gate before publishing the event. Event subscribers can
+        // submit an approval synchronously, so publishing first can make the
+        // POST route observe an unknown id and return 404.
+        const pending = this.opts.approvalGate.request(approval)
+        const cancelPendingApproval = (reason: string): void => {
+          if (!this.opts.approvalGate.expire?.(approval.id, reason)) {
+            this.opts.approvalGate.decide(approval.id, 'deny', reason)
+          }
+        }
+        try {
+          await this.opts.events.record({
+            kind: 'approval_requested',
+            threadId: approval.threadId,
+            turnId: approval.turnId,
+            approvalId: approval.id,
+            toolName: approval.toolName,
+            status: 'pending',
+            approvalPolicy: input.approvalPolicy,
+            sandboxMode: input.sandboxMode,
+            summary: approval.summary
+          })
+        } catch (error) {
+          cancelPendingApproval('failed to publish approval request')
+          void pending.catch(() => undefined)
+          throw error
+        }
+        return awaitAbortableGate(
+          pending,
           input.signal,
           () => {
-            this.opts.approvalGate.expire?.(approval.id, 'turn aborted while awaiting approval')
-          }
+            cancelPendingApproval('turn aborted while awaiting approval')
+          },
+          'approval wait aborted'
         )
       },
       ...(input.userInputDisabled
@@ -2446,6 +2463,17 @@ export class AgentLoop {
     },
     signal: AbortSignal
   ): Promise<UserInputResolution> {
+    // Register before the item/event becomes observable. Otherwise a renderer
+    // that responds as soon as it receives `user_input_requested` races the
+    // gate registration and receives a false 404 from the input route.
+    const pending = this.opts.userInputGate.request({
+      id: input.id,
+      threadId,
+      turnId,
+      itemId: input.itemId,
+      prompt: input.prompt,
+      questions: input.questions
+    })
     const item = makeUserInputItem({
       id: input.itemId,
       threadId,
@@ -2454,19 +2482,25 @@ export class AgentLoop {
       prompt: input.prompt,
       questions: input.questions
     })
-    await this.opts.turns.applyItem(threadId, item)
-    await this.opts.events.record({
-      kind: 'user_input_requested',
-      threadId,
-      turnId,
-      itemId: item.id,
-      inputId: input.id,
-      status: 'pending',
-      prompt: input.prompt,
-      questions: input.questions
-    })
+    try {
+      await this.opts.turns.applyItem(threadId, item)
+      await this.opts.events.record({
+        kind: 'user_input_requested',
+        threadId,
+        turnId,
+        itemId: item.id,
+        inputId: input.id,
+        status: 'pending',
+        prompt: input.prompt,
+        questions: input.questions
+      })
+    } catch (error) {
+      this.opts.userInputGate.resolve(input.id, { status: 'cancelled' })
+      void pending.catch(() => undefined)
+      throw error
+    }
 
-    const resolution = await this.waitForUserInput(threadId, turnId, input, signal)
+    const resolution = await this.waitForUserInput(input, signal, pending)
     await this.opts.turns.updateItem(threadId, item.id, {
       status: resolution.status,
       finishedAt: this.opts.nowIso(),
@@ -2492,45 +2526,23 @@ export class AgentLoop {
   }
 
   private async waitForUserInput(
-    threadId: string,
-    turnId: string,
     input: {
       id: string
       itemId: string
       prompt: string
       questions: UserInputQuestion[]
     },
-    signal: AbortSignal
+    signal: AbortSignal,
+    pending: Promise<UserInputResolution>
   ): Promise<UserInputResolution> {
-    const pending = this.opts.userInputGate.request({
-      id: input.id,
-      threadId,
-      turnId,
-      itemId: input.itemId,
-      prompt: input.prompt,
-      questions: input.questions
-    })
-    if (!signal.aborted) {
-      return new Promise<UserInputResolution>((resolve, reject) => {
-        const onAbort = (): void => {
-          this.opts.userInputGate.resolve(input.id, { status: 'cancelled' })
-          signal.removeEventListener('abort', onAbort)
-          reject(new Error('cancelled while awaiting user input'))
-        }
-        signal.addEventListener('abort', onAbort, { once: true })
-        pending
-          .then((resolution) => {
-            signal.removeEventListener('abort', onAbort)
-            resolve(resolution)
-          })
-          .catch((error) => {
-            signal.removeEventListener('abort', onAbort)
-            reject(error)
-          })
-      })
-    }
-    this.opts.userInputGate.resolve(input.id, { status: 'cancelled' })
-    throw new Error('cancelled while awaiting user input')
+    return awaitAbortableGate(
+      pending,
+      signal,
+      () => {
+        this.opts.userInputGate.resolve(input.id, { status: 'cancelled' })
+      },
+      'cancelled while awaiting user input'
+    )
   }
 
   private async compactIfNeeded(
@@ -3311,36 +3323,6 @@ function normalizeTurnLimits(input: AgentLoopOptions['turnLimits']): {
     maxWallTimeMs: Math.max(1, Math.floor(input?.maxWallTimeMs ?? 15 * 60_000)),
     maxToolCallsPerStep: Math.max(1, Math.floor(input?.maxToolCallsPerStep ?? 32))
   }
-}
-
-function awaitAbortableApproval(
-  pending: Promise<'allow' | 'deny'>,
-  signal: AbortSignal,
-  onAbort: () => void
-): Promise<'allow' | 'deny'> {
-  if (signal.aborted) {
-    onAbort()
-    return Promise.reject(new Error('approval wait aborted'))
-  }
-  return new Promise((resolve, reject) => {
-    const cleanup = () => signal.removeEventListener('abort', abort)
-    const abort = () => {
-      cleanup()
-      onAbort()
-      reject(new Error('approval wait aborted'))
-    }
-    signal.addEventListener('abort', abort, { once: true })
-    pending.then(
-      (decision) => {
-        cleanup()
-        resolve(decision)
-      },
-      (error) => {
-        cleanup()
-        reject(error)
-      }
-    )
-  })
 }
 
 export function memoryInstructions(memories: Array<{ id: string; content: string; scope: string }>): string[] {

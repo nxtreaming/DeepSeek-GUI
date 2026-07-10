@@ -54,6 +54,10 @@ class NoopUserInputGate implements UserInputGate {
     return undefined
   }
 
+  claimResolution() {
+    return undefined
+  }
+
   resolve(): boolean {
     return false
   }

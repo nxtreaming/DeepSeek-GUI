@@ -1401,6 +1401,97 @@ describe('AgentLoop', () => {
     expect(events.filter((event) => event.kind === 'user_input_resolved')).toHaveLength(1)
   })
 
+  it('arms the user-input gate before publishing the request event', async () => {
+    let calls = 0
+    const h = makeHarness({
+      provider: 'immediate-input',
+      model: 'immediate-input',
+      async *stream(): AsyncIterable<ModelStreamChunk> {
+        calls += 1
+        if (calls === 1) {
+          yield {
+            kind: 'tool_call_complete',
+            callId: 'call_input',
+            toolName: 'request_user_input',
+            arguments: { prompt: 'Continue?' }
+          }
+          yield { kind: 'completed', stopReason: 'tool_calls' }
+          return
+        }
+        yield { kind: 'completed', stopReason: 'stop' }
+      }
+    })
+    await bootstrapThread(h)
+    let immediatelyResolved = false
+    const unsubscribe = h.bus.subscribe(h.threadId, (event) => {
+      if (event.kind !== 'user_input_requested') return
+      immediatelyResolved = h.userInputGate.resolve(event.inputId, {
+        status: 'submitted',
+        answers: []
+      })
+    })
+
+    const status = await h.loop.runTurn(h.threadId, h.turnId)
+    unsubscribe()
+
+    expect(status).toBe('completed')
+    expect(immediatelyResolved).toBe(true)
+  })
+
+  it('arms the approval gate before publishing the request event', async () => {
+    const executed: string[] = []
+    const tool = LocalToolHost.defineTool({
+      name: 'requires_approval',
+      description: 'Requires approval',
+      inputSchema: { type: 'object', properties: {} },
+      policy: 'on-request',
+      execute: async () => {
+        executed.push('requires_approval')
+        return { output: { ok: true } }
+      }
+    })
+    let calls = 0
+    const h = makeHarness({
+      provider: 'immediate-approval',
+      model: 'immediate-approval',
+      async *stream(): AsyncIterable<ModelStreamChunk> {
+        calls += 1
+        if (calls === 1) {
+          yield {
+            kind: 'tool_call_complete',
+            callId: 'call_approval',
+            toolName: 'requires_approval',
+            arguments: {}
+          }
+          yield { kind: 'completed', stopReason: 'tool_calls' }
+          return
+        }
+        yield { kind: 'completed', stopReason: 'stop' }
+      }
+    }, { tools: [tool] })
+    await h.threadStore.upsert(createThreadRecord({
+      id: h.threadId,
+      title: 'demo',
+      workspace: '/tmp',
+      model: 'fake',
+      approvalPolicy: 'always'
+    }))
+    const started = await h.turns.startTurn({ threadId: h.threadId, request: { prompt: 'hello' } })
+    h.turnId = started.turnId
+    let immediatelyAllowed = false
+    const unsubscribe = h.bus.subscribe(h.threadId, (event) => {
+      if (event.kind !== 'approval_requested') return
+      immediatelyAllowed = h.approvalGate.decide(event.approvalId, 'allow')
+    })
+
+    const status = await h.loop.runTurn(h.threadId, h.turnId)
+    unsubscribe()
+
+    expect(status).toBe('completed')
+    expect(immediatelyAllowed).toBe(true)
+    expect(executed).toEqual(['requires_approval'])
+  })
+
   it('uses the thread approval policy when executing auto tools', async () => {
     const approvalDecisions: string[] = []
     const tool = LocalToolHost.defineTool({

@@ -10,6 +10,7 @@ import { InstructionRuntime } from '../../instructions/instruction-runtime.js'
 import { CapabilityRegistry } from '../../adapters/tool/capability-registry.js'
 import { LocalToolHost } from '../../adapters/tool/local-tool-host.js'
 import { InMemoryApprovalGate } from '../../adapters/in-memory-approval-gate.js'
+import { InMemoryUserInputGate } from '../../adapters/in-memory-user-input-gate.js'
 
 function fakeGate(pending: Promise<UserInputResolution>): {
   gate: UserInputGate
@@ -466,6 +467,38 @@ describe('createAgentSdkRuntime turn context', () => {
     expect(events).toContainEqual(expect.objectContaining({ kind: 'approval_requested', approvalPolicy: 'always' }))
   })
 
+  test('arms SDK approvals before publishing approval_requested', async () => {
+    const approvalGate = new InMemoryApprovalGate()
+    let immediatelyAllowed = false
+    const runtime = createAgentSdkRuntime({
+      registry: {} as never,
+      turns: {} as never,
+      sessionStore: {} as never,
+      threadStore: { get: async () => threadWith({ approvalPolicy: 'always' }) } as never,
+      events: {
+        record: async (event: { kind: string; approvalId?: string }) => {
+          if (event.kind === 'approval_requested' && event.approvalId) {
+            immediatelyAllowed = approvalGate.decide(event.approvalId, 'allow')
+          }
+        }
+      } as never,
+      ids: { next: (prefix) => `${prefix}_1` },
+      prefix: { systemPrompt: '' },
+      providerConfigs: {},
+      agentSdkProviderIds: new Set(),
+      defaultApprovalPolicy: 'auto',
+      approvalGate
+    })
+    const deps = (runtime as unknown as {
+      deps: {
+        decideToolApproval(threadId: string, turnId: string, toolName: string, input: Record<string, unknown>): Promise<{ allow: boolean }>
+      }
+    }).deps
+
+    await expect(deps.decideToolApproval('th', 'tn', 'Bash', { command: 'pwd' })).resolves.toEqual({ allow: true })
+    expect(immediatelyAllowed).toBe(true)
+  })
+
   test('denies SDK built-in tools under a thread never policy', async () => {
     const runtime = createAgentSdkRuntime({
       registry: {} as never,
@@ -546,6 +579,66 @@ describe('createAgentSdkRuntime turn context', () => {
 
     expect(events.filter((event) => event.kind === 'user_input_requested')).toHaveLength(1)
     expect(events.filter((event) => event.kind === 'user_input_resolved')).toHaveLength(0)
+  })
+
+  test('arms SDK user input before publishing user_input_requested', async () => {
+    const userInputGate = new InMemoryUserInputGate()
+    const interactiveTool = LocalToolHost.defineTool({
+      name: 'user_input',
+      description: 'Ask the user a question',
+      inputSchema: { type: 'object', properties: {} },
+      policy: 'auto',
+      execute: async (_args, context) => {
+        const resolution = await context.awaitUserInput?.({
+          id: 'in_sdk_immediate',
+          itemId: 'item_sdk_immediate',
+          prompt: 'Continue?',
+          questions: []
+        })
+        return { output: resolution ?? { status: 'cancelled' }, isError: resolution?.status === 'cancelled' }
+      }
+    })
+    const registry = CapabilityRegistry.fromLocalTools([interactiveTool])
+    let immediatelyResolved = false
+    const runtime = createAgentSdkRuntime({
+      registry,
+      toolHost: new LocalToolHost({ registry }),
+      turns: { applyItem: async () => undefined, updateItem: async () => undefined } as never,
+      sessionStore: { loadEventsSince: async () => [] } as never,
+      threadStore: {
+        get: async () => threadWith({
+          workspace: '/ws',
+          turns: [{ id: 'tn', prompt: 'ask' } as ThreadRecord['turns'][number]]
+        })
+      } as never,
+      events: {
+        record: async (event: { kind: string; inputId?: string }) => {
+          if (event.kind === 'user_input_requested' && event.inputId) {
+            immediatelyResolved = userInputGate.resolve(event.inputId, {
+              status: 'submitted',
+              answers: []
+            })
+          }
+        }
+      } as never,
+      ids: { next: (prefix) => `${prefix}_1` },
+      prefix: { systemPrompt: '' },
+      providerConfigs: {},
+      agentSdkProviderIds: new Set(),
+      defaultApprovalPolicy: 'auto',
+      userInputGate
+    })
+    const deps = (runtime as unknown as {
+      deps: {
+        executeKunTool(threadId: string, turnId: string, toolName: string, args: Record<string, unknown>): Promise<{ output: unknown; isError?: boolean }>
+      }
+    }).deps
+
+    await expect(deps.executeKunTool('th', 'tn', 'user_input', {})).resolves.toEqual({
+      output: { status: 'submitted', answers: [] },
+      isError: false
+    })
+    expect(immediatelyResolved).toBe(true)
   })
 
   test('injects native AGENTS.md instructions and records turn metadata', async () => {

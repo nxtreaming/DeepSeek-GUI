@@ -188,4 +188,50 @@ describe('optimizePrompt', () => {
     const body = JSON.parse(String(firstCall[1].body)) as { model: string }
     expect(body.model).toBe('other-chat')
   })
+
+  it('uses unwrapped ChatGPT OAuth and Responses Lite for GPT-5.6', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ output_text: 'Optimized.' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const settings = createSettings({
+      promptOptimization: {
+        enabled: true,
+        providerId: 'codex',
+        model: 'gpt-5.6-sol',
+        prompt: 'Optimize.',
+        timeoutMs: 60_000
+      }
+    })
+    settings.provider.providers.push({
+      id: 'codex',
+      name: 'ChatGPT 订阅',
+      apiKey: JSON.stringify({
+        kind: 'codex-oauth', accessToken: 'oauth-token', refreshToken: 'refresh',
+        accountId: 'account', expiresAt: Date.now() + 60_000
+      }),
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      endpointFormat: 'responses',
+      models: ['gpt-5.6-sol'],
+      modelProfiles: {
+        'gpt-5.6-sol': {
+          inputModalities: ['text', 'image'], outputModalities: ['text'],
+          supportsToolCalling: true, messageParts: ['text', 'image_url'], responsesMode: 'lite'
+        }
+      }
+    })
+
+    await optimizePrompt(settings, 'rough prompt')
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(init.headers).toMatchObject({
+      Authorization: 'Bearer oauth-token',
+      'ChatGPT-Account-Id': 'account',
+      'x-openai-internal-codex-responses-lite': 'true'
+    })
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>
+    expect(body).toMatchObject({ store: false, parallel_tool_calls: false, reasoning: { context: 'all_turns' } })
+    expect(body).not.toHaveProperty('instructions')
+    expect(body.input).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'additional_tools', role: 'developer' })
+    ]))
+  })
 })

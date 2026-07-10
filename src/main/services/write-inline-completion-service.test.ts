@@ -391,6 +391,41 @@ describe('requestWriteInlineCompletion', () => {
     })
   })
 
+  it('uses unwrapped ChatGPT OAuth and Responses Lite for GPT-5.6', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ output_text: ' continuation' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const settings = createSettings({ inheritProvider: false, providerId: 'codex', inheritModel: false, model: 'gpt-5.6-sol' })
+    const credentials = JSON.stringify({
+      kind: 'codex-oauth', accessToken: 'oauth-token', refreshToken: 'refresh',
+      accountId: 'account', expiresAt: Date.now() + 60_000
+    })
+    settings.provider.providers.push({
+      id: 'codex', name: 'ChatGPT 订阅', apiKey: credentials,
+      baseUrl: 'https://chatgpt.com/backend-api/codex', endpointFormat: 'responses',
+      models: ['gpt-5.6-sol'], modelProfiles: {
+        'gpt-5.6-sol': {
+          inputModalities: ['text', 'image'], outputModalities: ['text'], supportsToolCalling: true,
+          messageParts: ['text', 'image_url'], responsesMode: 'lite'
+        }
+      }
+    })
+
+    await requestWriteInlineCompletion(settings, { ...createRequest(), model: 'gpt-5.6-sol' })
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(init.headers).toMatchObject({
+      Authorization: 'Bearer oauth-token',
+      'ChatGPT-Account-Id': 'account',
+      'x-openai-internal-codex-responses-lite': 'true'
+    })
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>
+    expect(body).toMatchObject({ store: false, parallel_tool_calls: false, reasoning: { context: 'all_turns' } })
+    expect(body).not.toHaveProperty('instructions')
+  })
+
   it('uses the long-completion prompt and token budget for inspiration mode', async () => {
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ choices: [{ text: '\n\nA longer continuation.' }] }), {

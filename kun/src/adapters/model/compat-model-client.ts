@@ -272,7 +272,11 @@ export class CompatModelClient implements ModelClient {
       round.requestBody = body
       round.url = redactUrlForLog(url)
     }
-    const headers = this.buildHeaders(stream, endpointFormat)
+    const headers = this.buildHeaders(
+      stream,
+      endpointFormat,
+      this.isCodexResponsesLiteModel(requestModel)
+    )
     const retry = normalizeModelRequestRetryConfig(this.config.retry)
     const retryStatuses = new Set(retry.httpStatusCodes)
     let result = await this.postChatCompletion(url, headers, body, request.abortSignal)
@@ -441,7 +445,11 @@ export class CompatModelClient implements ModelClient {
     }
   }
 
-  private buildHeaders(stream: boolean, endpointFormat: ModelEndpointFormat): Record<string, string> {
+  private buildHeaders(
+    stream: boolean,
+    endpointFormat: ModelEndpointFormat,
+    responsesLite = false
+  ): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json'
     }
@@ -458,7 +466,11 @@ export class CompatModelClient implements ModelClient {
         headers.Authorization = `Bearer ${this.config.apiKey}`
       }
     }
-    return { ...headers, ...(this.config.headers ?? {}) }
+    return {
+      ...headers,
+      ...(this.config.headers ?? {}),
+      ...(responsesLite ? { 'x-openai-internal-codex-responses-lite': 'true' } : {})
+    }
   }
 
   private async classifyHttpError(status: number, text: string): Promise<{ message: string; code: string }> {
@@ -586,6 +598,7 @@ export class CompatModelClient implements ModelClient {
     stream: boolean
   ): Record<string, unknown> {
     const isCodex = this.isCodexEndpoint()
+    const isCodexLite = this.isCodexResponsesLiteModel(model)
     // Codex requires system content in the top-level `instructions` field and
     // will reject system-role items inside `input`. Split the message list so
     // system messages go to instructions and the rest go to input.
@@ -596,11 +609,32 @@ export class CompatModelClient implements ModelClient {
       .map((m) => chatContentToPlainText(m.content).trim())
       .filter(Boolean)
       .join('\n\n')
+    const responseTools = normalizeToolSpecs(request.tools).map((tool) => ({
+      type: 'function',
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.inputSchema
+    }))
+    const input = messagesToResponsesInput(inputMessages)
+    const litePrefix: Record<string, unknown>[] = isCodexLite
+      ? [
+          { type: 'additional_tools', role: 'developer', tools: responseTools },
+          ...(instructions
+            ? [{
+                type: 'message',
+                role: 'developer',
+                content: [{ type: 'input_text', text: instructions }]
+              }]
+            : [])
+        ]
+      : []
     const body: Record<string, unknown> = {
       model,
       stream,
-      input: messagesToResponsesInput(inputMessages),
-      ...(isCodex ? { instructions: instructions || ' ', store: false } : {})
+      input: isCodexLite ? [...litePrefix, ...input] : input,
+      ...(isCodexLite
+        ? { store: false, tool_choice: 'auto', parallel_tool_calls: false }
+        : isCodex ? { instructions: instructions || ' ', store: false } : {})
     }
     const maxTokens = this.resolveMaxTokens(request, model)
     if (maxTokens !== undefined && !isCodex) {
@@ -623,20 +657,16 @@ export class CompatModelClient implements ModelClient {
         includeSummary: isCodex
       }
     )
-    if (reasoning) {
-      body.reasoning = reasoning
+    if (reasoning || isCodexLite) {
+      body.reasoning = isCodexLite
+        ? { ...(reasoning ?? {}), context: 'all_turns' }
+        : reasoning!
       if (isCodex) body.include = ['reasoning.encrypted_content']
     }
-    const tools = normalizeToolSpecs(request.tools)
-    if (tools.length > 0) {
-      body.tools = tools.map((tool) => ({
-        type: 'function',
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.inputSchema
-      }))
+    if (!isCodexLite && responseTools.length > 0) {
+      body.tools = responseTools
     }
-    if (this.isCodexEndpoint() && codexModelSupportsNativeImageGeneration(model)) {
+    if (!isCodexLite && this.isCodexEndpoint() && codexModelSupportsNativeImageGeneration(model)) {
       const toolsArray = (body.tools ?? []) as Record<string, unknown>[]
       toolsArray.push({ type: 'image_generation' })
       body.tools = toolsArray
@@ -646,6 +676,10 @@ export class CompatModelClient implements ModelClient {
 
   private isCodexEndpoint(): boolean {
     return this.config.baseUrl.includes('chatgpt.com/backend-api/codex')
+  }
+
+  private isCodexResponsesLiteModel(model: string): boolean {
+    return this.isCodexEndpoint() && this.capabilitiesForModel(model).responsesMode === 'lite'
   }
 
   private buildAnthropicMessagesRequestBody(

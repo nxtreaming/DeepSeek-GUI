@@ -100,7 +100,7 @@ async function postJson(url: string, body: Record<string, string>): Promise<Reco
   try {
     return JSON.parse(text) as Record<string, unknown>
   } catch {
-    throw new Error(`Codex auth: unexpected response from ${url}: ${text.slice(0, 200)}`)
+    throw new Error(`ChatGPT subscription auth: unexpected response from ${url}: ${text.slice(0, 200)}`)
   }
 }
 
@@ -113,12 +113,12 @@ async function postForm(url: string, body: Record<string, string>): Promise<Reco
   const text = await res.text()
   if (!res.ok) {
     const detail = summarizeAuthErrorBody(text)
-    throw new Error(`Codex auth: ${url} returned ${res.status}${detail ? `: ${detail}` : ''}`)
+    throw new Error(`ChatGPT subscription auth: ${url} returned ${res.status}${detail ? `: ${detail}` : ''}`)
   }
   try {
     return JSON.parse(text) as Record<string, unknown>
   } catch {
-    throw new Error(`Codex auth: unexpected response from ${url}: ${text.slice(0, 200)}`)
+    throw new Error(`ChatGPT subscription auth: unexpected response from ${url}: ${text.slice(0, 200)}`)
   }
 }
 
@@ -289,13 +289,13 @@ function credentialsFromTokens(tokens: Record<string, unknown>): CodexOAuthCrede
   }
 }
 
-const CODEX_BROWSER_SUCCESS_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>Codex</title><style>body{font-family:system-ui,-apple-system,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#faf6ef;color:#3a2f23}.box{text-align:center;padding:2rem}h1{margin-bottom:.5rem}p{color:#8a7a66}</style></head><body><div class="box"><h1>登录成功</h1><p>可以关闭此窗口并返回应用。</p></div><script>setTimeout(()=>window.close(),1500)</script></body></html>`
+const CODEX_BROWSER_SUCCESS_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>ChatGPT 订阅</title><style>body{font-family:system-ui,-apple-system,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#faf6ef;color:#3a2f23}.box{text-align:center;padding:2rem}h1{margin-bottom:.5rem}p{color:#8a7a66}</style></head><body><div class="box"><h1>登录成功</h1><p>可以关闭此窗口并返回应用。</p></div><script>setTimeout(()=>window.close(),1500)</script></body></html>`
 
 function renderCodexErrorHtml(message: string): string {
   const safe = message.replace(/[&<>"]/g, (ch) =>
     ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : ch === '>' ? '&gt;' : '&quot;'
   )
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Codex</title></head><body style="font-family:system-ui;padding:2rem;color:#b91c1c"><h1>登录失败</h1><p>${safe}</p></body></html>`
+  return `<!doctype html><html><head><meta charset="utf-8"><title>ChatGPT 订阅</title></head><body style="font-family:system-ui;padding:2rem;color:#b91c1c"><h1>登录失败</h1><p>${safe}</p></body></html>`
 }
 
 /**

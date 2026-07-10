@@ -41,6 +41,25 @@ export type ModelProviderPresetId =
 
 export const TOKEN_PLAN_PROVIDER_ID_SUFFIX = '-token-plan'
 
+export const CHATGPT_SUBSCRIPTION_PROVIDER_ID = 'codex'
+export const CHATGPT_SUBSCRIPTION_LEGACY_NAME = 'Codex (ChatGPT)'
+export const CHATGPT_SUBSCRIPTION_NAME = 'ChatGPT 订阅'
+export const CHATGPT_SUBSCRIPTION_LEGACY_MODEL_IDS = [
+  'gpt-5.5',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.3-codex-spark'
+] as const
+export const CHATGPT_SUBSCRIPTION_MODEL_IDS = [
+  'gpt-5.5',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.3-codex-spark'
+] as const
+
 export type ModelProviderTokenPlanRegion = {
   id: string
   baseUrl: string
@@ -654,19 +673,17 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     apiKeyUrl: 'https://console.cloud.tencent.com/hunyuan/start'
   },
   {
-    id: 'codex',
-    name: 'Codex (ChatGPT)',
+    id: CHATGPT_SUBSCRIPTION_PROVIDER_ID,
+    name: CHATGPT_SUBSCRIPTION_NAME,
     category: 'subscription',
     baseUrl: 'https://chatgpt.com/backend-api/codex/responses',
     endpointFormat: 'custom_endpoint',
-    models: [
-      'gpt-5.5',
-      'gpt-5.4',
-      'gpt-5.4-mini',
-      'gpt-5.3-codex-spark'
-    ],
+    models: [...CHATGPT_SUBSCRIPTION_MODEL_IDS],
     modelProfiles: {
       'gpt-5.5': visionChatProfile(1_000_000),
+      'gpt-5.6-sol': codexLiteVisionChatProfile(372_000),
+      'gpt-5.6-terra': codexLiteVisionChatProfile(372_000),
+      'gpt-5.6-luna': codexLiteVisionChatProfile(372_000),
       'gpt-5.4': visionChatProfile(1_000_000),
       'gpt-5.4-mini': visionChatProfile(1_000_000),
       'gpt-5.3-codex-spark': textChatProfile(128_000)
@@ -877,6 +894,13 @@ function visionChatProfile(
     messageParts: ['text', 'image_url'],
     ...(reasoning ? { reasoning } : {}),
     ...(endpointFormat ? { endpointFormat } : {})
+  }
+}
+
+function codexLiteVisionChatProfile(contextWindowTokens: number): ModelProviderModelProfileV1 {
+  return {
+    ...visionChatProfile(contextWindowTokens),
+    responsesMode: 'lite'
   }
 }
 

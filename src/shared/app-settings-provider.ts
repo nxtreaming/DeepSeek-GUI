@@ -58,6 +58,11 @@ import { getKunRuntimeSettings } from './app-settings-kun'
 import { normalizeDeepseekBaseUrl } from './app-settings-normalizers'
 import { DEFAULT_COMPOSER_MODEL_IDS } from './default-composer-models'
 import {
+  CHATGPT_SUBSCRIPTION_LEGACY_MODEL_IDS,
+  CHATGPT_SUBSCRIPTION_LEGACY_NAME,
+  CHATGPT_SUBSCRIPTION_MODEL_IDS,
+  CHATGPT_SUBSCRIPTION_NAME,
+  CHATGPT_SUBSCRIPTION_PROVIDER_ID,
   TOKEN_PLAN_PROVIDER_ID_SUFFIX,
   getModelProviderPreset,
   modelProviderPresetProfile,
@@ -916,9 +921,10 @@ function normalizeModelProviderProfile(
 ): ModelProviderProfileV1 | null {
   const id = normalizeModelProviderId(input?.id)
   if (!id) return null
-  const name = typeof input?.name === 'string' && input.name.trim() ? input.name.trim() : id
+  const rawName = typeof input?.name === 'string' && input.name.trim() ? input.name.trim() : id
   const baseUrl = normalizeModelProviderBaseUrl(input?.baseUrl)
-  const models = normalizeProviderModels(input?.models)
+  const rawModels = normalizeProviderModels(input?.models)
+  const { name, models } = migrateChatGptSubscriptionProfile(id, rawName, rawModels)
   const modelProfiles = withPresetModelProfiles(
     id,
     models,
@@ -945,6 +951,22 @@ function normalizeModelProviderProfile(
     ...(music ? { music } : {}),
     ...(video ? { video } : {})
   })
+}
+
+function migrateChatGptSubscriptionProfile(
+  id: string,
+  name: string,
+  models: string[]
+): { name: string; models: string[] } {
+  if (id !== CHATGPT_SUBSCRIPTION_PROVIDER_ID) return { name, models }
+  return {
+    name: name === CHATGPT_SUBSCRIPTION_LEGACY_NAME ? CHATGPT_SUBSCRIPTION_NAME : name,
+    // This is intentionally a precise one-time signature migration. Do not
+    // re-add models that a user deliberately removed from a custom list.
+    models: sameModelIds(models, CHATGPT_SUBSCRIPTION_LEGACY_MODEL_IDS)
+      ? [...CHATGPT_SUBSCRIPTION_MODEL_IDS]
+      : models
+  }
 }
 
 export function defaultModelRequestRetrySettings(): ModelRequestRetrySettingsV1 {
@@ -1019,7 +1041,21 @@ function withPresetModelProfiles(
     }
     merged[modelId] = normalizeModelProviderModelProfile(presetProfile)
   }
-  return { ...merged, ...stored }
+  const profiles = { ...stored }
+  for (const [modelId, presetProfile] of Object.entries(merged)) {
+    const storedProfile = stored[modelId]
+    profiles[modelId] = {
+      ...presetProfile,
+      ...(storedProfile ?? {}),
+      // Responses Lite is a required transport contract for its matching
+      // Codex models, not a user-editable profile choice. Older manually
+      // added profiles should inherit it from the preset.
+      ...(presetProfile.responsesMode && !storedProfile?.responsesMode
+        ? { responsesMode: presetProfile.responsesMode }
+        : {})
+    }
+  }
+  return profiles
 }
 
 function presetModelProfilesForProvider(
@@ -1066,6 +1102,7 @@ function normalizeModelProviderModelProfile(
   const maxOutputTokens = boundedPositiveInteger(input?.maxOutputTokens)
   const reasoning = normalizeModelReasoningCapability(input?.reasoning)
   const endpointFormat = normalizeOptionalModelEndpointFormat(input?.endpointFormat)
+  const responsesMode = input?.responsesMode === 'lite' ? 'lite' : undefined
   return {
     ...(normalizeProviderModels(input?.aliases).length
       ? { aliases: normalizeProviderModels(input?.aliases) }
@@ -1077,7 +1114,8 @@ function normalizeModelProviderModelProfile(
     supportsToolCalling: input?.supportsToolCalling !== false,
     messageParts: normalizeModelMessageParts(input?.messageParts, defaultMessageParts),
     ...(reasoning ? { reasoning } : {}),
-    ...(endpointFormat ? { endpointFormat } : {})
+    ...(endpointFormat ? { endpointFormat } : {}),
+    ...(responsesMode ? { responsesMode } : {})
   }
 }
 

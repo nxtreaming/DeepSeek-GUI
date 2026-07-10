@@ -20,6 +20,7 @@ import {
   defaultTerminalSettings,
   defaultWriteSettings,
   defaultModelRequestRetrySettings,
+  CHATGPT_SUBSCRIPTION_MODEL_IDS,
   listMusicGenerationProviderProfiles,
   listSpeechToTextProviderProfiles,
   listTextToSpeechProviderProfiles,
@@ -73,6 +74,54 @@ describe('model provider retry settings', () => {
       maxAttempts: 10,
       initialDelayMs: 600_000,
       httpStatusCodes: [429, 503, 599]
+    })
+  })
+})
+
+describe('ChatGPT subscription migration', () => {
+  it('renames only the legacy default and upgrades exactly the legacy model set', () => {
+    const normalized = normalizeModelProviderSettings({
+      providers: [{
+        id: 'codex',
+        name: 'Codex (ChatGPT)',
+        apiKey: 'oauth-json',
+        baseUrl: 'https://chatgpt.com/backend-api/codex',
+        endpointFormat: 'responses',
+        models: ['gpt-5.4-mini', 'gpt-5.5', 'gpt-5.3-codex-spark', 'gpt-5.4'],
+        modelProfiles: {}
+      }]
+    })
+
+    const provider = normalized.providers.find((item) => item.id === 'codex')!
+    expect(provider.name).toBe('ChatGPT 订阅')
+    expect(provider.models).toEqual(CHATGPT_SUBSCRIPTION_MODEL_IDS)
+    for (const modelId of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+      expect(provider.modelProfiles[modelId]).toMatchObject({
+        contextWindowTokens: 372_000,
+        inputModalities: ['text', 'image'],
+        outputModalities: ['text'],
+        supportsToolCalling: true,
+        responsesMode: 'lite'
+      })
+    }
+  })
+
+  it('keeps custom names and custom model collections unchanged', () => {
+    const normalized = normalizeModelProviderSettings({
+      providers: [{
+        id: 'codex',
+        name: 'Team subscription',
+        apiKey: 'oauth-json',
+        baseUrl: 'https://chatgpt.com/backend-api/codex',
+        endpointFormat: 'responses',
+        models: ['gpt-5.5', 'team-model'],
+        modelProfiles: {}
+      }]
+    })
+
+    expect(normalized.providers.find((item) => item.id === 'codex')).toMatchObject({
+      name: 'Team subscription',
+      models: ['gpt-5.5', 'team-model']
     })
   })
 })

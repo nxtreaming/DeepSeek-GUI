@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AppSettingsV1 } from '../shared/app-settings'
+import { CHATGPT_SUBSCRIPTION_MODEL_IDS } from '../shared/app-settings'
 import { probeModelProvider, providerProbeHeaders } from './provider-connection'
 
 afterEach(() => {
@@ -32,6 +33,25 @@ describe('providerProbeHeaders', () => {
 })
 
 describe('probeModelProvider', () => {
+  it('validates ChatGPT subscription OAuth locally and returns its shared catalog', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await probeModelProvider({
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      apiKey: JSON.stringify({
+        kind: 'codex-oauth',
+        accessToken: 'access',
+        refreshToken: 'refresh',
+        accountId: 'account',
+        expiresAt: Date.now() + 60_000
+      }),
+      endpointFormat: 'responses'
+    })
+
+    expect(result).toEqual({ ok: true, latencyMs: 0, modelIds: [...CHATGPT_SUBSCRIPTION_MODEL_IDS] })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('rejects non-http base urls without fetching', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)

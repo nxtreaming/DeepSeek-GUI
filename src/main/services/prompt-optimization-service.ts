@@ -14,6 +14,12 @@ import {
 } from '../../shared/app-settings'
 import type { PromptOptimizationResult } from '../../shared/kun-gui-api'
 import { fetchWithOptionalProxy } from '../proxy-fetch'
+import {
+  codexResponsesLiteInput,
+  resolveCodexResponsesRequestAuth,
+  usesCodexResponsesLite,
+  withCodexResponsesLiteHeader
+} from '../codex-responses-lite'
 
 type PromptOptimizationRequestPayload = {
   url: string
@@ -66,6 +72,7 @@ function effectivePromptOptimizationModel(settings: AppSettingsV1): {
   apiKey: string
   baseUrl: string
   endpointFormat: ModelEndpointFormat
+  responsesMode?: 'lite'
   systemPrompt: string
   timeoutMs: number
 } {
@@ -82,6 +89,7 @@ function effectivePromptOptimizationModel(settings: AppSettingsV1): {
     apiKey: provider.apiKey.trim() || runtime.apiKey.trim(),
     baseUrl: provider.baseUrl.trim() || runtime.baseUrl.trim() || DEFAULT_DEEPSEEK_BASE_URL,
     endpointFormat,
+    responsesMode: profile?.responsesMode,
     systemPrompt: resolveKunPromptOptimizationPrompt(runtime),
     timeoutMs: promptOptimization.timeoutMs
   }
@@ -94,18 +102,37 @@ function buildPromptOptimizationRequest(input: {
   model: string
   systemPrompt: string
   sourceText: string
+  responsesMode?: 'lite'
 }): PromptOptimizationRequestPayload | null {
   const endpointFormat = resolveModelEndpointFormat(input.endpointFormat, input.baseUrl)
   if (!endpointFormat) return null
-  const headers: Record<string, string> = {
+  const auth = resolveCodexResponsesRequestAuth(input.baseUrl, input.apiKey)
+  const responsesLite = usesCodexResponsesLite(input.baseUrl, input.responsesMode)
+  const headers: Record<string, string> = withCodexResponsesLiteHeader({
     'Content-Type': 'application/json',
-    Authorization: `Bearer ${input.apiKey}`
-  }
+    Authorization: `Bearer ${auth.apiKey}`,
+    ...auth.headers
+  }, responsesLite)
   if (endpointFormat === 'messages') {
-    headers['x-api-key'] = input.apiKey
+    headers['x-api-key'] = auth.apiKey
     headers['anthropic-version'] = '2023-06-01'
   }
   if (endpointFormat === 'responses') {
+    if (responsesLite) {
+      return {
+        url: buildModelEndpointUrl(input.baseUrl, input.endpointFormat),
+        endpointFormat,
+        headers,
+        body: {
+          model: input.model,
+          input: codexResponsesLiteInput(input.systemPrompt, [{ role: 'user', content: input.sourceText }]),
+          store: false,
+          tool_choice: 'auto',
+          parallel_tool_calls: false,
+          reasoning: { context: 'all_turns' }
+        }
+      }
+    }
     return {
       url: buildModelEndpointUrl(input.baseUrl, input.endpointFormat),
       endpointFormat,
@@ -195,10 +222,14 @@ export async function optimizePrompt(
   if (!modelSettings.apiKey) {
     return { ok: false, message: 'Prompt optimization model is missing an API key.' }
   }
+  if (!resolveCodexResponsesRequestAuth(modelSettings.baseUrl, modelSettings.apiKey).apiKey) {
+    return { ok: false, message: 'ChatGPT subscription credentials are invalid. Please sign in again.' }
+  }
   const request = buildPromptOptimizationRequest({
     baseUrl: modelSettings.baseUrl,
     apiKey: modelSettings.apiKey,
     endpointFormat: modelSettings.endpointFormat,
+    responsesMode: modelSettings.responsesMode,
     model: modelSettings.model,
     systemPrompt: modelSettings.systemPrompt,
     sourceText: trimmed

@@ -146,4 +146,61 @@ describe('CompatModelClient per-model endpointFormat', () => {
     ])
     expect(calls.every((call) => call.body.messages)).toBe(true)
   })
+
+  it('uses the Codex Responses Lite shape for GPT-5.6 models', async () => {
+    const calls: Array<{ headers: Record<string, string>; body: Record<string, unknown> }> = []
+    const client = new CompatModelClient({
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      apiKey: 'oauth-access-token',
+      model: 'gpt-5.6-sol',
+      endpointFormat: 'responses',
+      nonStreaming: true,
+      fetchImpl: (async (_url: string, init: { headers: Record<string, string>; body: string }) => {
+        calls.push({ headers: init.headers, body: JSON.parse(init.body) as Record<string, unknown> })
+        return new Response(JSON.stringify({ output_text: 'ok' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+      }) as unknown as typeof fetch,
+      modelCapabilities: (model) => ({
+        id: model,
+        endpointFormat: 'responses',
+        inputModalities: ['text', 'image'],
+        outputModalities: ['text'],
+        supportsToolCalling: true,
+        messageParts: ['text', 'image_url'],
+        responsesMode: model === 'gpt-5.6-sol' ? 'lite' : undefined
+      })
+    })
+
+    await drain(client.stream({
+      ...request('gpt-5.6-sol'),
+      reasoningEffort: 'max',
+      tools: [{
+        name: 'read_file',
+        description: 'Read a file',
+        inputSchema: { type: 'object', properties: {} }
+      }]
+    }))
+
+    expect(calls[0].headers['x-openai-internal-codex-responses-lite']).toBe('true')
+    expect(calls[0].body).toMatchObject({
+      model: 'gpt-5.6-sol',
+      store: false,
+      parallel_tool_calls: false,
+      reasoning: { effort: 'xhigh', context: 'all_turns' }
+    })
+    expect(calls[0].body).not.toHaveProperty('instructions')
+    expect(calls[0].body).not.toHaveProperty('tools')
+    const input = calls[0].body.input as Array<Record<string, unknown>>
+    expect(input[0]).toMatchObject({
+      type: 'additional_tools',
+      role: 'developer',
+      tools: [{ type: 'function', name: 'read_file' }]
+    })
+    expect(input[0].tools).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'image_generation' })
+    ]))
+    expect(input[1]).toMatchObject({ type: 'message', role: 'developer' })
+  })
 })

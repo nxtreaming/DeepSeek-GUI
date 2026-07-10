@@ -105,7 +105,8 @@ const modelProfilePatchSchema = z.object({
     defaultEffort: modelReasoningEffortSchema,
     requestProtocol: modelReasoningRequestProtocolSchema
   }).strict().optional(),
-  endpointFormat: modelEndpointFormatSchema.optional()
+  endpointFormat: modelEndpointFormatSchema.optional(),
+  responsesMode: z.literal('lite').optional()
 }).strict()
 
 const modelProviderPatchSchema = z.object({

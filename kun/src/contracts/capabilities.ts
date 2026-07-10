@@ -61,7 +61,10 @@ export const ModelCapabilityMetadata = z
     // Per-model wire-format override. Lets one provider route some models to
     // chat completions and others to Anthropic Messages / OpenAI Responses
     // (e.g. OpenCode Go). Absent means "inherit the provider/runtime format".
-    endpointFormat: z.enum(MODEL_ENDPOINT_FORMATS).optional()
+    endpointFormat: z.enum(MODEL_ENDPOINT_FORMATS).optional(),
+    // Codex-only Responses Lite transport. Omitted uses the standard
+    // Responses request shape.
+    responsesMode: z.literal('lite').optional()
   })
   .strict()
 export type ModelCapabilityMetadata = z.infer<typeof ModelCapabilityMetadata>

@@ -29,6 +29,7 @@ export type ModelContextProfile = ModelContextThresholds & {
   messageParts: readonly ModelMessagePartSupport[]
   reasoning?: ModelReasoningCapabilityMetadata
   endpointFormat?: ModelEndpointFormat
+  responsesMode?: 'lite'
 }
 
 export type ModelContextProfileConfig = {
@@ -50,6 +51,7 @@ export type ModelContextProfileConfig = {
   messageParts?: readonly ModelMessagePartSupport[]
   reasoning?: ModelReasoningCapabilityMetadata
   endpointFormat?: ModelEndpointFormat
+  responsesMode?: 'lite'
 }
 
 export type ModelConfig = {
@@ -161,7 +163,8 @@ export function modelCapabilitiesForModel(
     ...(profile?.maxOutputTokens ? { maxOutputTokens: profile.maxOutputTokens } : {}),
     messageParts: [...(profile?.messageParts ?? DEFAULT_MODEL_MESSAGE_PARTS)],
     ...(profile?.reasoning ? { reasoning: copyReasoningCapability(profile.reasoning) } : {}),
-    ...(profile?.endpointFormat ? { endpointFormat: profile.endpointFormat } : {})
+    ...(profile?.endpointFormat ? { endpointFormat: profile.endpointFormat } : {}),
+    ...(profile?.responsesMode ? { responsesMode: profile.responsesMode } : {})
   }
 }
 
@@ -246,6 +249,7 @@ function mergeModelContextProfile(
   ])
   const reasoning = input.reasoning ?? current?.reasoning
   const endpointFormat = input.endpointFormat ?? current?.endpointFormat
+  const responsesMode = input.responsesMode ?? current?.responsesMode
   const maxOutputTokens = input.maxOutputTokens ?? current?.maxOutputTokens
   return {
     canonicalModel,
@@ -261,7 +265,8 @@ function mergeModelContextProfile(
     ...(reasoning
       ? { reasoning: copyReasoningCapability(reasoning) }
       : {}),
-    ...(endpointFormat ? { endpointFormat } : {})
+    ...(endpointFormat ? { endpointFormat } : {}),
+    ...(responsesMode ? { responsesMode } : {})
   }
 }
 

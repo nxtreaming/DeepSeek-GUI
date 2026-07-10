@@ -198,6 +198,11 @@ export type ModelProviderModelProfileV1 = {
   reasoning?: ModelProviderReasoningCapabilityV1
   /** Per-model wire-format override. Omitted means "inherit the provider's endpointFormat". */
   endpointFormat?: ModelEndpointFormat
+  /**
+   * Codex Responses Lite transport. Omitted means the standard Responses
+   * request shape; this is preset metadata rather than a user-facing toggle.
+   */
+  responsesMode?: 'lite'
 }
 export type ModelProviderImageCapabilityV1 = {
   protocol: ImageGenerationProtocol

@@ -884,7 +884,8 @@ function modelConfigProfilesFromProviderProfiles(
       supportsToolCalling: profile.supportsToolCalling,
       messageParts: profile.messageParts,
       ...(profile.reasoning ? { reasoning: profile.reasoning } : {}),
-      ...(profile.endpointFormat ? { endpointFormat: profile.endpointFormat } : {})
+      ...(profile.endpointFormat ? { endpointFormat: profile.endpointFormat } : {}),
+      ...(profile.responsesMode ? { responsesMode: profile.responsesMode } : {})
     }
   }
   return out

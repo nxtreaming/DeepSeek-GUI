@@ -382,7 +382,7 @@ function CodexLoginSection({
     if (typeof window.kunGui?.startCodexAuth !== 'function') {
       if (!isCurrentLoginRun(runId)) return
       setPhase('error')
-      setError('Codex 登录不可用，请重启应用')
+      setError('ChatGPT 订阅登录不可用，请重启应用')
       setNotice(null)
       return
     }
@@ -445,7 +445,7 @@ function CodexLoginSection({
     const runId = beginLoginRun()
     if (typeof window.kunGui?.startCodexBrowserAuth !== 'function') {
       setPhase('error')
-      setError('Codex 浏览器登录不可用，请重启应用')
+      setError('ChatGPT 订阅浏览器登录不可用，请重启应用')
       setNotice(null)
       return
     }

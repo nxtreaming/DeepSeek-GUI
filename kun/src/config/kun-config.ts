@@ -89,7 +89,8 @@ export const ModelContextProfileConfigSchema = z
     // every model would be pinned to chat_completions.
     endpointFormat: z
       .preprocess(normalizeModelEndpointFormat, z.enum(MODEL_ENDPOINT_FORMATS))
-      .optional()
+      .optional(),
+    responsesMode: z.literal('lite').optional()
   })
   .strict()
   .superRefine((profile, ctx) => {

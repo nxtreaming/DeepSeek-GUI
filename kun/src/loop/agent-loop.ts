@@ -18,7 +18,7 @@ import type { SessionStore } from '../ports/session-store.js'
 import type { ApprovalGate } from '../ports/approval-gate.js'
 import type { UserInputGate, UserInputQuestion, UserInputResolution } from '../ports/user-input-gate.js'
 import type { UsageService } from '../services/usage-service.js'
-import type { TurnService } from '../services/turn-service.js'
+import { TurnCapacityError, type TurnService } from '../services/turn-service.js'
 import type { RuntimeEventRecorder } from '../services/runtime-event-recorder.js'
 import { withThreadStoreMutation } from '../services/thread-mutation-coordinator.js'
 import type { PipelineStage } from '../contracts/events.js'
@@ -916,14 +916,23 @@ export class AgentLoop {
     // Inherit headless/IM gating from the most recent turn so a resumed turn
     // doesn't deadlock awaiting user input that will never arrive.
     const lastTurn = thread.turns[thread.turns.length - 1]
-    const started = await this.opts.turns.startTurn({
-      threadId,
-      request: {
-        prompt: GOAL_RESUME_PROMPT,
-        mode: 'agent',
-        ...(lastTurn?.disableUserInput ? { disableUserInput: true } : {})
+    let started
+    try {
+      started = await this.opts.turns.startTurn({
+        threadId,
+        request: {
+          prompt: GOAL_RESUME_PROMPT,
+          mode: 'agent',
+          ...(lastTurn?.disableUserInput ? { disableUserInput: true } : {})
+        }
+      })
+    } catch (error) {
+      if (error instanceof TurnCapacityError) {
+        this.goalResume.defer(threadId)
+        return
       }
-    })
+      throw error
+    }
     await this.opts.events.record({
       kind: 'error',
       threadId,

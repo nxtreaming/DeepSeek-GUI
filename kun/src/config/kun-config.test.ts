@@ -15,6 +15,26 @@ describe('RuntimeTuningConfigSchema streamIdleTimeoutMs', () => {
   })
 })
 
+describe('RuntimeTuningConfigSchema turn admission', () => {
+  it('accepts a bounded positive global turn concurrency cap', () => {
+    expect(RuntimeTuningConfigSchema.safeParse({
+      turnLimits: { maxConcurrentTurns: 4 }
+    }).success).toBe(true)
+  })
+
+  it('rejects zero, fractions, and excessive global turn caps', () => {
+    expect(RuntimeTuningConfigSchema.safeParse({
+      turnLimits: { maxConcurrentTurns: 0 }
+    }).success).toBe(false)
+    expect(RuntimeTuningConfigSchema.safeParse({
+      turnLimits: { maxConcurrentTurns: 1.5 }
+    }).success).toBe(false)
+    expect(RuntimeTuningConfigSchema.safeParse({
+      turnLimits: { maxConcurrentTurns: 257 }
+    }).success).toBe(false)
+  })
+})
+
 describe('expandHomePath', () => {
   it('expands Windows-style home-relative paths', () => {
     expect(expandHomePath('~\\kun\\config.json')).toBe(join(homedir(), 'kun', 'config.json'))

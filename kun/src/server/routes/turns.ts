@@ -12,7 +12,7 @@ import {
 import { jsonResponse, type JsonResponse } from '../response.js'
 import { readJsonBody } from '../read-json-body.js'
 import { ERRORS } from './runtime-error.js'
-import { TurnConflictError, type TurnService } from '../../services/turn-service.js'
+import { TurnCapacityError, TurnConflictError, type TurnService } from '../../services/turn-service.js'
 
 export async function startTurn(
   turns: TurnService,
@@ -34,6 +34,9 @@ export async function startTurn(
     onStarted?.(response)
     return jsonResponse(response, 202)
   } catch (error) {
+    if (error instanceof TurnCapacityError) {
+      return ERRORS.rateLimited(error.message, { maxConcurrentTurns: error.maxConcurrentTurns })
+    }
     if (error instanceof TurnConflictError) return ERRORS.conflict(error.message)
     if (error instanceof Error && /not found/i.test(error.message)) {
       return ERRORS.notFound(error.message)

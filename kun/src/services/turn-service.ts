@@ -45,11 +45,28 @@ export type TurnServiceDeps = {
   prefix?: ImmutablePrefix
   defaultModel?: string
   contextCompaction?: ContextCompactionConfig
+  /** Maximum number of active turns this in-process runtime may admit. */
+  maxConcurrentTurns?: number
   ids: IdGenerator
   nowIso: () => string
 }
 
 export class TurnConflictError extends Error {}
+
+/**
+ * The serve runtime has accepted as many active turns as it is configured to
+ * execute. Unlike a per-thread conflict, callers may retry this on another
+ * thread after any active turn settles.
+ */
+export class TurnCapacityError extends Error {
+  constructor(readonly maxConcurrentTurns: number) {
+    super(`runtime turn capacity reached (${maxConcurrentTurns} active turns); retry after a turn finishes`)
+    this.name = 'TurnCapacityError'
+  }
+}
+
+/** Finite by default so a burst of threads cannot exhaust one serve process. */
+export const DEFAULT_MAX_CONCURRENT_TURNS = 4
 
 /**
  * Turn service: owns the turn lifecycle (start, finish, abort, steer,
@@ -60,15 +77,24 @@ export class TurnConflictError extends Error {}
 export class TurnService {
   private deps: TurnServiceDeps
   private readonly inflightTurns = new Map<string, AbortController>()
+  /** Turn ids that own one global admission slot. */
+  private readonly admittedTurnThreads = new Map<string, string>()
+  private maxConcurrentTurns: number
 
   constructor(deps: TurnServiceDeps) {
     this.deps = deps
+    this.maxConcurrentTurns = normalizeMaxConcurrentTurns(deps.maxConcurrentTurns)
   }
 
-  updateRuntimeConfig(patch: Partial<Pick<TurnServiceDeps, 'model' | 'defaultModel' | 'contextCompaction'>>): void {
+  updateRuntimeConfig(
+    patch: Partial<Pick<TurnServiceDeps, 'model' | 'defaultModel' | 'contextCompaction' | 'maxConcurrentTurns'>>
+  ): void {
     this.deps = {
       ...this.deps,
       ...patch
+    }
+    if ('maxConcurrentTurns' in patch) {
+      this.maxConcurrentTurns = normalizeMaxConcurrentTurns(patch.maxConcurrentTurns)
     }
   }
 
@@ -76,71 +102,95 @@ export class TurnService {
     threadId: string
     request: StartTurnRequest
   }): Promise<StartTurnResponse> {
-    const started = await this.withThreadMutation(input.threadId, async () => {
-      const thread = await this.deps.threadStore.get(input.threadId)
-      if (!thread) throw new Error(`thread not found: ${input.threadId}`)
-      if (thread.turns.some((turn) => turn.status === 'queued' || turn.status === 'running')) {
-        throw new TurnConflictError(`thread already has an active turn: ${input.threadId}`)
-      }
-      const turnId = this.deps.ids.next('turn')
-      const turn = createTurnRecord({
-        id: turnId,
-        threadId: input.threadId,
-        prompt: input.request.prompt,
-        model: input.request.model,
-        providerId: input.request.providerId,
-        reasoningEffort: input.request.reasoningEffort,
-        attachmentIds: input.request.attachmentIds ?? [],
-        guiPlan: input.request.guiPlan,
-        guiDesignCanvas: input.request.guiDesignCanvas,
-        guiDesignMode: input.request.guiDesignMode,
-        mode: input.request.mode,
-        disableUserInput: input.request.disableUserInput,
-        imContext: input.request.imContext,
-        workspaceCheckpointId: input.request.workspaceCheckpointId
+    let attemptedTurnId: string | undefined
+    try {
+      const started = await this.withThreadMutation(input.threadId, async () => {
+        const thread = await this.deps.threadStore.get(input.threadId)
+        if (!thread) throw new Error(`thread not found: ${input.threadId}`)
+        if (thread.turns.some((turn) => turn.status === 'queued' || turn.status === 'running')) {
+          throw new TurnConflictError(`thread already has an active turn: ${input.threadId}`)
+        }
+        // Allocate only an in-memory id before admission. A rejected request
+        // still has no turn record, item, or event to persist.
+        const turnId = this.deps.ids.next('turn')
+        if (!this.tryAdmitTurn(turnId, input.threadId)) {
+          throw new TurnCapacityError(this.maxConcurrentTurns)
+        }
+        attemptedTurnId = turnId
+        try {
+          const turn = createTurnRecord({
+            id: turnId,
+            threadId: input.threadId,
+            prompt: input.request.prompt,
+            model: input.request.model,
+            providerId: input.request.providerId,
+            reasoningEffort: input.request.reasoningEffort,
+            attachmentIds: input.request.attachmentIds ?? [],
+            guiPlan: input.request.guiPlan,
+            guiDesignCanvas: input.request.guiDesignCanvas,
+            guiDesignMode: input.request.guiDesignMode,
+            mode: input.request.mode,
+            disableUserInput: input.request.disableUserInput,
+            imContext: input.request.imContext,
+            workspaceCheckpointId: input.request.workspaceCheckpointId
+          })
+          const userItem = makeUserItem({
+            id: `item_${turnId}_user`,
+            turnId,
+            threadId: input.threadId,
+            text: input.request.prompt,
+            displayText: input.request.displayText,
+            messageSource: input.request.messageSource,
+            attachmentIds: input.request.attachmentIds ?? [],
+            fileReferences: input.request.fileReferences ?? [],
+            workspaceCheckpointId: input.request.workspaceCheckpointId
+          })
+          const controller = new AbortController()
+          const next = {
+            ...touchThread(thread, this.deps.nowIso()),
+            status: 'running' as const,
+            ...(input.request.approvalPolicy !== undefined
+              ? { approvalPolicy: input.request.approvalPolicy }
+              : {}),
+            ...(input.request.sandboxMode !== undefined
+              ? { sandboxMode: input.request.sandboxMode }
+              : {}),
+            turns: [...thread.turns, startTurnRecord(appendTurnItem(turn, userItem))]
+          }
+          await this.deps.threadStore.upsert({ ...next, updatedAt: this.deps.nowIso() })
+          await this.deps.sessionStore.appendItem(input.threadId, userItem)
+          this.inflightTurns.set(turnId, controller)
+          this.deps.inflight.begin({ id: turnId, kind: 'model', threadId: input.threadId, turnId })
+          return { turnId, userItem }
+        } catch (error) {
+          // A failed start has no loop to perform lifecycle cleanup. Release
+          // its slot immediately; the outer catch best-effort marks any
+          // already-persisted turn aborted so it cannot strand the thread.
+          this.clearRuntimeTurnState(input.threadId, turnId, { abort: true })
+          throw error
+        }
       })
-      const userItem = makeUserItem({
-        id: `item_${turnId}_user`,
-        turnId,
+      await this.deps.events.record({
+        kind: 'turn_started',
         threadId: input.threadId,
-        text: input.request.prompt,
-        displayText: input.request.displayText,
-        messageSource: input.request.messageSource,
-        attachmentIds: input.request.attachmentIds ?? [],
-        fileReferences: input.request.fileReferences ?? [],
-        workspaceCheckpointId: input.request.workspaceCheckpointId
+        turnId: started.turnId
       })
-      const controller = new AbortController()
-      const next = {
-        ...touchThread(thread, this.deps.nowIso()),
-        status: 'running' as const,
-        ...(input.request.approvalPolicy !== undefined
-          ? { approvalPolicy: input.request.approvalPolicy }
-          : {}),
-        ...(input.request.sandboxMode !== undefined
-          ? { sandboxMode: input.request.sandboxMode }
-          : {}),
-        turns: [...thread.turns, startTurnRecord(appendTurnItem(turn, userItem))]
+      await this.deps.events.record({
+        kind: 'item_created',
+        threadId: input.threadId,
+        turnId: started.turnId,
+        itemId: started.userItem.id,
+        item: started.userItem
+      })
+      return { threadId: input.threadId, turnId: started.turnId, userMessageItemId: started.userItem.id }
+    } catch (error) {
+      if (attemptedTurnId) {
+        // This is deliberately outside the per-thread mutation callback: the
+        // latter must unwind before interruptTurn can take the same lock.
+        await this.interruptTurn({ threadId: input.threadId, turnId: attemptedTurnId }).catch(() => undefined)
       }
-      await this.deps.threadStore.upsert({ ...next, updatedAt: this.deps.nowIso() })
-      await this.deps.sessionStore.appendItem(input.threadId, userItem)
-      this.inflightTurns.set(turnId, controller)
-      this.deps.inflight.begin({ id: turnId, kind: 'model', threadId: input.threadId, turnId })
-      return { turnId, userItem }
-    })
-    await this.deps.events.record({
-      kind: 'turn_started',
-      threadId: input.threadId,
-      turnId: started.turnId
-    })
-    await this.deps.events.record({
-      kind: 'item_created',
-      threadId: input.threadId,
-      turnId: started.turnId,
-      itemId: started.userItem.id,
-      item: started.userItem
-    })
-    return { threadId: input.threadId, turnId: started.turnId, userMessageItemId: started.userItem.id }
+      throw error
+    }
   }
 
   async rewindThread(input: {
@@ -206,37 +256,42 @@ export class TurnService {
   }
 
   async interruptTurn(input: { threadId: string; turnId: string; discard?: boolean }): Promise<{ status: TurnStatus }> {
-    const controller = this.inflightTurns.get(input.turnId)
-    const transition = await this.withThreadMutation(input.threadId, async () => {
-      const current = await this.deps.threadStore.get(input.threadId)
-      if (!current) throw new Error(`thread not found: ${input.threadId}`)
-      const turn = current.turns.find((candidate) => candidate.id === input.turnId)
-      if (!turn) throw new Error(`turn not found: ${input.turnId}`)
-      if (!isActiveTurn(turn)) {
-        throw new TurnConflictError(`turn is not active: ${input.turnId}`)
-      }
-      const turns = current.turns.map((candidate) =>
-        candidate.id === input.turnId
-          ? this.finalizeOpenItems(
-              finishTurn(input.discard ? { ...candidate, items: this.keepUserItems(candidate.items) } : candidate, 'aborted'),
-              'aborted'
-            )
-          : candidate
-      )
-      await this.deps.threadStore.upsert({
-        ...touchThread(current, this.deps.nowIso()),
-        turns,
-        status: threadStatusFromTurns(turns),
-        updatedAt: this.deps.nowIso()
+    let transition: boolean
+    try {
+      transition = await this.withThreadMutation(input.threadId, async () => {
+        const current = await this.deps.threadStore.get(input.threadId)
+        if (!current) throw new Error(`thread not found: ${input.threadId}`)
+        const turn = current.turns.find((candidate) => candidate.id === input.turnId)
+        if (!turn) throw new Error(`turn not found: ${input.turnId}`)
+        if (!isActiveTurn(turn)) {
+          throw new TurnConflictError(`turn is not active: ${input.turnId}`)
+        }
+        const turns = current.turns.map((candidate) =>
+          candidate.id === input.turnId
+            ? this.finalizeOpenItems(
+                finishTurn(input.discard ? { ...candidate, items: this.keepUserItems(candidate.items) } : candidate, 'aborted'),
+                'aborted'
+              )
+            : candidate
+        )
+        await this.deps.threadStore.upsert({
+          ...touchThread(current, this.deps.nowIso()),
+          turns,
+          status: threadStatusFromTurns(turns),
+          updatedAt: this.deps.nowIso()
+        })
+        return true
       })
-      return true
-    })
+    } catch (error) {
+      // If persistence is unavailable, the caller still asked to interrupt
+      // execution. Abort and free its admission slot; restart reconciliation
+      // can settle the durable running record later.
+      this.clearRuntimeTurnState(input.threadId, input.turnId, { abort: true })
+      throw error
+    }
     if (!transition) return { status: 'aborted' }
 
-    controller?.abort()
-    this.deps.steering.clear(input.turnId)
-    this.inflightTurns.delete(input.turnId)
-    this.deps.inflight.end(input.turnId)
+    this.clearRuntimeTurnState(input.threadId, input.turnId, { abort: true })
     await this.deps.events.record({
       kind: 'turn_aborted',
       threadId: input.threadId,
@@ -415,29 +470,40 @@ export class TurnService {
     details?: unknown
     severity?: RuntimeErrorSeverity
   }): Promise<void> {
-    const transitioned = await this.withThreadMutation(input.threadId, async () => {
-      const current = await this.deps.threadStore.get(input.threadId)
-      if (!current) return false
-      const turn = current.turns.find((candidate) => candidate.id === input.turnId)
-      if (!turn || !isActiveTurn(turn)) return false
-      const turns = current.turns.map((candidate) => {
-        if (candidate.id !== input.turnId) return candidate
-        const finished = this.finalizeOpenItems(finishTurn(candidate, input.status), input.status)
-        return input.error ? { ...finished, error: input.error } : finished
+    let transitioned: boolean
+    try {
+      transitioned = await this.withThreadMutation(input.threadId, async () => {
+        const current = await this.deps.threadStore.get(input.threadId)
+        if (!current) return false
+        const turn = current.turns.find((candidate) => candidate.id === input.turnId)
+        if (!turn || !isActiveTurn(turn)) return false
+        const turns = current.turns.map((candidate) => {
+          if (candidate.id !== input.turnId) return candidate
+          const finished = this.finalizeOpenItems(finishTurn(candidate, input.status), input.status)
+          return input.error ? { ...finished, error: input.error } : finished
+        })
+        await this.deps.threadStore.upsert({
+          ...touchThread(current, this.deps.nowIso()),
+          turns,
+          status: threadStatusFromTurns(turns),
+          updatedAt: this.deps.nowIso()
+        })
+        return true
       })
-      await this.deps.threadStore.upsert({
-        ...touchThread(current, this.deps.nowIso()),
-        turns,
-        status: threadStatusFromTurns(turns),
-        updatedAt: this.deps.nowIso()
-      })
-      return true
-    })
-    if (!transitioned) return
+    } catch (error) {
+      // The model loop has already settled. Do not keep its in-process slot
+      // forever just because its terminal status could not be persisted.
+      this.clearRuntimeTurnState(input.threadId, input.turnId)
+      throw error
+    }
+    if (!transitioned) {
+      // A thread can disappear while a loop is unwinding. It no longer has a
+      // durable turn to update, but its in-process admission must not leak.
+      this.clearRuntimeTurnState(input.threadId, input.turnId)
+      return
+    }
 
-    this.inflightTurns.delete(input.turnId)
-    this.deps.inflight.end(input.turnId)
-    this.deps.steering.clear(input.turnId)
+    this.clearRuntimeTurnState(input.threadId, input.turnId)
     await this.finalizePersistedOpenItems(input.threadId, input.turnId, input.status)
     const errorItem = input.error
       ? makeErrorItem({
@@ -635,6 +701,29 @@ export class TurnService {
     return withThreadStoreMutation(this.deps.threadStore, threadId, operation)
   }
 
+  private tryAdmitTurn(turnId: string, threadId: string): boolean {
+    if (this.admittedTurnThreads.size >= this.maxConcurrentTurns) {
+      return false
+    }
+    // There is no await between capacity check and this map insertion, so
+    // starts serialized on different thread locks cannot over-admit.
+    this.admittedTurnThreads.set(turnId, threadId)
+    return true
+  }
+
+  private clearRuntimeTurnState(
+    threadId: string,
+    turnId: string,
+    options: { abort?: boolean } = {}
+  ): void {
+    if (this.admittedTurnThreads.get(turnId) !== threadId) return
+    if (options.abort) this.inflightTurns.get(turnId)?.abort()
+    this.inflightTurns.delete(turnId)
+    this.deps.inflight.end(turnId)
+    this.deps.steering.clear(turnId)
+    this.admittedTurnThreads.delete(turnId)
+  }
+
   private finalizeOpenItems(
     turn: Turn,
     status: Extract<TurnStatus, 'completed' | 'failed' | 'aborted'>
@@ -720,6 +809,11 @@ function isActiveTurn(turn: Turn): boolean {
 
 function threadStatusFromTurns(turns: Turn[]): ThreadStatus {
   return turns.some(isActiveTurn) ? 'running' : 'idle'
+}
+
+function normalizeMaxConcurrentTurns(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_MAX_CONCURRENT_TURNS
+  return Math.max(1, Math.floor(value))
 }
 
 function modelForManualCompaction(input: {

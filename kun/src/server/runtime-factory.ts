@@ -266,6 +266,7 @@ export async function createKunServeRuntime(
     prefix,
     defaultModel: options.model,
     contextCompaction: options.contextCompaction,
+    maxConcurrentTurns: activeOptions.runtime?.turnLimits?.maxConcurrentTurns,
     ids,
     nowIso
   })
@@ -883,7 +884,8 @@ export async function createKunServeRuntime(
 	    turnService.updateRuntimeConfig({
 	      defaultModel: activeOptions.model,
 	      contextCompaction: activeOptions.contextCompaction,
-	      model: modelClient
+	      model: modelClient,
+	      maxConcurrentTurns: activeOptions.runtime?.turnLimits?.maxConcurrentTurns
 	    })
 	    threadService.updateRuntimeDefaults({
 	      approvalPolicy: activeOptions.approvalPolicy,

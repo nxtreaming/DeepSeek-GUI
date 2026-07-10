@@ -16,7 +16,7 @@ import type { ModelClient, ModelRequest, ModelStreamChunk } from '../ports/model
 import { emptyUsageSnapshot } from '../contracts/usage.js'
 import type { TurnItem } from '../contracts/items.js'
 import { RuntimeEventRecorder } from './runtime-event-recorder.js'
-import { TurnConflictError, TurnService } from './turn-service.js'
+import { TurnCapacityError, TurnConflictError, TurnService } from './turn-service.js'
 import { UsageService } from './usage-service.js'
 
 class SummaryModel implements ModelClient {
@@ -46,6 +46,18 @@ class SummaryModel implements ModelClient {
       }
     }
     yield { kind: 'completed', stopReason: 'stop' }
+  }
+}
+
+class FailOnceAppendSessionStore extends InMemorySessionStore {
+  private failNextAppend = true
+
+  override async appendItem(threadId: string, item: TurnItem): Promise<void> {
+    if (this.failNextAppend) {
+      this.failNextAppend = false
+      throw new Error('append item failed')
+    }
+    await super.appendItem(threadId, item)
   }
 }
 
@@ -90,6 +102,110 @@ describe('TurnService startTurn', () => {
     expect(thread?.turns[0]?.status).toBe('running')
     expect(await service.interruptActiveTurns()).toBe(1)
     expect((await threadStore.get(threadId))?.turns[0]?.status).toBe('aborted')
+  })
+
+  it('caps active turns across threads before persistence and releases slots when they settle', async () => {
+    const sessionStore = new InMemorySessionStore()
+    const threadStore = new InMemoryThreadStore()
+    const eventBus = new InMemoryEventBus()
+    const nowIso = () => '2026-06-18T00:00:00.000Z'
+    const service = new TurnService({
+      threadStore,
+      sessionStore,
+      events: new RuntimeEventRecorder({
+        eventBus,
+        sessionStore,
+        allocateSeq: (threadId) => eventBus.allocateSeq(threadId),
+        nowIso
+      }),
+      inflight: new InflightTracker(),
+      steering: new SteeringQueue(),
+      compactor: new ContextCompactor(),
+      maxConcurrentTurns: 1,
+      ids: new SequentialIdGenerator(),
+      nowIso
+    })
+    const threadIds = ['thr_capacity_a', 'thr_capacity_b', 'thr_capacity_c']
+    await Promise.all(threadIds.map((id) => threadStore.upsert(createThreadRecord({
+      id,
+      title: id,
+      workspace: '/tmp/workspace',
+      model: 'deepseek-v4-pro'
+    }))))
+
+    const first = await service.startTurn({
+      threadId: 'thr_capacity_a',
+      request: { prompt: 'first', model: 'm' }
+    })
+    await expect(service.startTurn({
+      threadId: 'thr_capacity_b',
+      request: { prompt: 'rejected', model: 'm' }
+    })).rejects.toBeInstanceOf(TurnCapacityError)
+
+    // The rejected request must be invisible to both the durable turn history
+    // and SSE replay, not merely left queued for a later scheduler pass.
+    expect((await threadStore.get('thr_capacity_b'))?.turns).toEqual([])
+    expect(await sessionStore.loadItems('thr_capacity_b')).toEqual([])
+    expect(await sessionStore.loadEventsSince('thr_capacity_b', 0)).toEqual([])
+
+    await service.finishTurn({
+      threadId: 'thr_capacity_a',
+      turnId: first.turnId,
+      status: 'completed'
+    })
+    const second = await service.startTurn({
+      threadId: 'thr_capacity_b',
+      request: { prompt: 'admitted after completion', model: 'm' }
+    })
+    await service.interruptTurn({ threadId: 'thr_capacity_b', turnId: second.turnId })
+    const third = await service.startTurn({
+      threadId: 'thr_capacity_c',
+      request: { prompt: 'admitted after interrupt', model: 'm' }
+    })
+
+    expect(third.threadId).toBe('thr_capacity_c')
+    await service.interruptTurn({ threadId: 'thr_capacity_c', turnId: third.turnId })
+  })
+
+  it('releases an admission and aborts an already-persisted turn when startup fails', async () => {
+    const sessionStore = new FailOnceAppendSessionStore()
+    const threadStore = new InMemoryThreadStore()
+    const eventBus = new InMemoryEventBus()
+    const nowIso = () => '2026-06-18T00:00:00.000Z'
+    const service = new TurnService({
+      threadStore,
+      sessionStore,
+      events: new RuntimeEventRecorder({
+        eventBus,
+        sessionStore,
+        allocateSeq: (threadId) => eventBus.allocateSeq(threadId),
+        nowIso
+      }),
+      inflight: new InflightTracker(),
+      steering: new SteeringQueue(),
+      compactor: new ContextCompactor(),
+      maxConcurrentTurns: 1,
+      ids: new SequentialIdGenerator(),
+      nowIso
+    })
+    await Promise.all(['thr_start_failure_a', 'thr_start_failure_b'].map((id) => threadStore.upsert(createThreadRecord({
+      id,
+      title: id,
+      workspace: '/tmp/workspace',
+      model: 'deepseek-v4-pro'
+    }))))
+
+    await expect(service.startTurn({
+      threadId: 'thr_start_failure_a',
+      request: { prompt: 'will fail while persisting', model: 'm' }
+    })).rejects.toThrow('append item failed')
+
+    expect((await threadStore.get('thr_start_failure_a'))?.turns[0]?.status).toBe('aborted')
+    const recovered = await service.startTurn({
+      threadId: 'thr_start_failure_b',
+      request: { prompt: 'slot was released', model: 'm' }
+    })
+    await service.interruptTurn({ threadId: 'thr_start_failure_b', turnId: recovered.turnId })
   })
 
   it('rejects cross-thread interrupts and ignores a late loop finish after interrupt', async () => {

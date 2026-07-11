@@ -1,14 +1,7 @@
-import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { join } from 'node:path'
-import { compileFunction, runInNewContext } from 'node:vm'
 import type {
   AppSettingsV1,
-  WorkflowCodeCheckResult,
-  WorkflowCodeLanguage,
-  WorkflowCustomModuleV1,
   WorkflowConnectionV1,
   WorkflowEnvVarV1,
   WorkflowInputFieldV1,
@@ -53,12 +46,19 @@ import { executeCoreWorkflowNode, isCoreWorkflowNode } from './workflow-core-nod
 import { executeHttpWorkflowNode } from './workflow-http-node-adapter'
 import { executeAiWorkflowNode } from './workflow-ai-node-adapter'
 import { executeImageWorkflowNode } from './workflow-image-node-adapter'
+import {
+  executeCodeWorkflowNode,
+  executeCustomWorkflowNode
+} from './workflow-code-node-adapter'
+
+export { checkWorkflowCode } from './workflow-code-node-adapter'
 
 const MAX_NODE_EXECUTIONS = 200
 const MAX_RUN_DURATION_MS = 30 * 60_000
 /** Sentinel branch that matches no output handle (e.g. switch with no rule + no fallback). */
 const NO_BRANCH = '__none__'
 const LIVE_STATUS_LINGER_MS = 8_000
+const MAX_SUBWORKFLOW_DEPTH = 5
 
 type ScheduleTriggerNode = Extract<WorkflowNodeV1, { type: 'schedule-trigger' }>
 
@@ -201,212 +201,6 @@ function buildAdjacency(connections: WorkflowConnectionV1[]): Map<string, Workfl
     map.set(edge.source, list)
   }
   return map
-}
-
-const CODE_TIMEOUT_MS = 2_000
-/** python/bash scripts may do real work (network, files), so they get longer than the JS sandbox. */
-const COMMAND_TIMEOUT_MS = 30_000
-const PYTHON_BIN = process.env.WORKFLOW_PYTHON_BIN?.trim() || 'python3'
-const MAX_SUBWORKFLOW_DEPTH = 5
-
-function resolveBashBin(): string {
-  const configured = process.env.WORKFLOW_BASH_BIN?.trim()
-  if (configured) return configured
-  if (process.platform !== 'win32') return 'bash'
-
-  const candidates = [
-    join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
-    join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Git', 'usr', 'bin', 'bash.exe'),
-    join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe')
-  ]
-  if (process.env.LOCALAPPDATA) {
-    candidates.push(join(process.env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'))
-  }
-  return candidates.find((candidate) => existsSync(candidate)) ?? 'bash'
-}
-
-const BASH_BIN = resolveBashBin()
-
-function runCodeNode(
-  code: string,
-  payload: WorkflowPayload,
-  fields: Record<string, unknown> = {}
-): NodeOutcome {
-  const sandbox: Record<string, unknown> = {
-    $json: payload.json,
-    $text: payload.text,
-    $fields: fields,
-    __result: undefined
-  }
-  try {
-    runInNewContext(`__result = (function(){\n${code}\n})()`, sandbox, {
-      timeout: CODE_TIMEOUT_MS,
-      displayErrors: true
-    })
-  } catch (error) {
-    throw new Error(`Code error: ${error instanceof Error ? error.message : String(error)}`)
-  }
-  const out = sandbox.__result
-  if (out === undefined || out === null) return { payload: { json: {}, text: '' }, message: 'ok' }
-  if (typeof out === 'string') return { payload: { json: { value: out }, text: out }, message: 'ok' }
-  const json = typeof out === 'object' ? out : { value: out }
-  return { payload: { json, text: safeJson(json) }, message: 'ok' }
-}
-
-/**
- * Run a python or bash script in a child process. The script reads its input on
- * stdin as JSON ({ json, text }) and via the $WORKFLOW_JSON / $WORKFLOW_TEXT env
- * vars; whatever it writes to stdout becomes the node output (parsed as JSON when
- * the whole stdout is a JSON object/array, otherwise passed through as text).
- */
-function runCommandNode(
-  language: 'python' | 'bash',
-  code: string,
-  payload: WorkflowPayload,
-  fields: Record<string, unknown> = {}
-): Promise<NodeOutcome> {
-  const bin = language === 'python' ? PYTHON_BIN : BASH_BIN
-  return new Promise((resolve, reject) => {
-    const child = spawn(bin, ['-c', code], {
-      env: {
-        ...process.env,
-        WORKFLOW_TEXT: payload.text ?? '',
-        WORKFLOW_JSON: safeJson(payload.json),
-        WORKFLOW_FIELDS: safeJson(fields)
-      }
-    })
-    let stdout = ''
-    let stderr = ''
-    let settled = false
-    const finish = (run: () => void): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      run()
-    }
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL')
-      finish(() => reject(new Error(`${language} script timed out after ${COMMAND_TIMEOUT_MS}ms`)))
-    }, COMMAND_TIMEOUT_MS)
-    child.stdout.on('data', (chunk) => {
-      stdout += String(chunk)
-    })
-    child.stderr.on('data', (chunk) => {
-      stderr += String(chunk)
-    })
-    child.on('error', (error) => {
-      const reason =
-        (error as NodeJS.ErrnoException).code === 'ENOENT'
-          ? `${bin} was not found on this machine`
-          : error.message
-      finish(() => reject(new Error(`${language} error: ${reason}`)))
-    })
-    child.on('close', (exitCode) => {
-      finish(() => {
-        if (exitCode !== 0) {
-          reject(new Error(`${language} exited with code ${exitCode}: ${(stderr || stdout).trim().slice(0, 500)}`))
-          return
-        }
-        const out = stdout.trim()
-        let parsed: unknown
-        try {
-          parsed = out ? JSON.parse(out) : undefined
-        } catch {
-          parsed = undefined
-        }
-        if (parsed !== null && typeof parsed === 'object') {
-          resolve({ payload: { json: parsed, text: out }, message: 'ok' })
-        } else {
-          resolve({ payload: { json: out ? { text: out } : {}, text: out }, message: 'ok' })
-        }
-      })
-    })
-    // Scripts that never read stdin trigger EPIPE on write — ignore it.
-    child.stdin.on('error', () => {})
-    child.stdin.write(JSON.stringify({ json: payload.json, text: payload.text }))
-    child.stdin.end()
-  })
-}
-
-/** Coerce a custom node's stored string values into typed $fields for its module. */
-function coerceModuleFields(
-  module: WorkflowCustomModuleV1,
-  values: Record<string, string>
-): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const field of module.fields) {
-    const raw = values[field.key] ?? field.defaultValue ?? ''
-    if (field.type === 'number') out[field.key] = raw === '' ? 0 : Number(raw) || 0
-    else if (field.type === 'boolean') out[field.key] = raw === 'true' || raw === '1'
-    else out[field.key] = raw
-  }
-  return out
-}
-
-/**
- * Editor-time syntax check for a Code node. JavaScript compiles in-process
- * (never executed); python/bash are parse-checked with the local interpreter
- * (`ast.parse` / `bash -n`). A missing interpreter returns `unavailable` rather
- * than a hard error so the editor can show a soft note.
- */
-export function checkWorkflowCode(language: WorkflowCodeLanguage, code: string): Promise<WorkflowCodeCheckResult> {
-  if (!code.trim()) return Promise.resolve({ status: 'ok' })
-  if (language === 'javascript') {
-    try {
-      // Compiles the function body without running it — surfaces SyntaxError only.
-      compileFunction(code, ['$json', '$text'])
-      return Promise.resolve({ status: 'ok' })
-    } catch (error) {
-      return Promise.resolve({ status: 'error', message: error instanceof Error ? error.message : String(error) })
-    }
-  }
-  const bin = language === 'python' ? PYTHON_BIN : BASH_BIN
-  const args = language === 'python' ? ['-c', 'import ast, sys; ast.parse(sys.stdin.read())'] : ['-n']
-  return new Promise((resolveResult) => {
-    let settled = false
-    const done = (result: WorkflowCodeCheckResult): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolveResult(result)
-    }
-    let child: ReturnType<typeof spawn>
-    try {
-      child = spawn(bin, args)
-    } catch {
-      done({ status: 'unavailable', message: `${bin} is not available — cannot check ${language} syntax.` })
-      return
-    }
-    const timer = setTimeout(() => {
-      try {
-        child.kill('SIGKILL')
-      } catch {
-        /* already exited */
-      }
-      done({ status: 'error', message: 'Syntax check timed out.' })
-    }, 8_000)
-    let stderr = ''
-    child.stderr?.on('data', (chunk) => {
-      stderr += String(chunk)
-    })
-    child.on('error', (error) => {
-      done(
-        (error as NodeJS.ErrnoException).code === 'ENOENT'
-          ? { status: 'unavailable', message: `${bin} was not found — cannot check ${language} syntax.` }
-          : { status: 'error', message: error.message }
-      )
-    })
-    child.on('close', (exitCode) => {
-      done(
-        exitCode === 0
-          ? { status: 'ok' }
-          : { status: 'error', message: stderr.trim().slice(0, 800) || `Exited with code ${exitCode}.` }
-      )
-    })
-    child.stdin?.on('error', () => {})
-    child.stdin?.write(code)
-    child.stdin?.end()
-  })
 }
 
 /**
@@ -1530,11 +1324,7 @@ export class WorkflowRuntime {
     if (node.type !== 'code') {
       throw new Error(`Code workflow node adapter received unsupported kind: ${node.type}`)
     }
-    return Promise.resolve(
-      node.config.language === 'python' || node.config.language === 'bash'
-        ? runCommandNode(node.config.language, node.config.code, context.payload)
-        : runCodeNode(node.config.code, context.payload)
-    )
+    return executeCodeWorkflowNode({ node, payload: context.payload })
   }
 
   private async executeNestedNode(node: WorkflowNodeV1, context: NodeExecutionContext): Promise<NodeOutcome> {
@@ -1694,14 +1484,11 @@ export class WorkflowRuntime {
     if (node.type !== 'custom') {
       throw new Error(`Custom workflow node adapter received unsupported kind: ${node.type}`)
     }
-    const module = context.settings.workflow.modules.find((item) => item.id === node.config.moduleId)
-    if (!module) throw new Error('Custom module not found — it may have been deleted.')
-    const fields = coerceModuleFields(module, node.config.values)
-    return Promise.resolve(
-      module.language === 'python' || module.language === 'bash'
-        ? runCommandNode(module.language, module.code, context.payload, fields)
-        : runCodeNode(module.code, context.payload, fields)
-    )
+    return executeCustomWorkflowNode({
+      node,
+      payload: context.payload,
+      modules: context.settings.workflow.modules
+    })
   }
 
   private syncPowerSaveBlocker(settings: AppSettingsV1): void {

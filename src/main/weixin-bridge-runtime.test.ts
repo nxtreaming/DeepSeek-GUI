@@ -98,4 +98,40 @@ describe('weixin bridge runtime', () => {
       configureWeixinBridgeRuntimeContextProvider(null)
     }
   })
+
+  it('cancels an in-flight GUI webhook when its account monitor stops', async () => {
+    configureWeixinBridgeRuntimeContextProvider(async () => ({
+      webhookUrl: 'http://127.0.0.1:18787/claw/im',
+      webhookSecret: '',
+      channelId: 'channel_weixin'
+    }))
+    const controller = new AbortController()
+    let requestSignal: AbortSignal | undefined
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async (_url, init) => {
+        requestSignal = init?.signal as AbortSignal
+        return new Promise<Response>((_resolve, reject) => {
+          requestSignal?.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'))
+          }, { once: true })
+        })
+      }
+    )
+
+    try {
+      const pending = weixinBridgeRuntimeInternals.postToDeepSeekGuiWebhook({
+        message_id: 'wx_msg_abort',
+        from_user_id: 'wx_user_abort',
+        item_list: [{ type: 1, text_item: { text: '停止测试' } }]
+      }, 'wx_account_1', controller.signal)
+      await vi.waitFor(() => expect(requestSignal).toBeDefined())
+      controller.abort()
+
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+      expect(requestSignal?.aborted).toBe(true)
+    } finally {
+      fetchMock.mockRestore()
+      configureWeixinBridgeRuntimeContextProvider(null)
+    }
+  })
 })

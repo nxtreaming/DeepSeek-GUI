@@ -32,6 +32,7 @@ export type WriteNotice = {
 
 export type WriteDocumentStats = {
   characterCount: number
+  wordCount: number
 }
 
 export type WriteModeMenuItem = {
@@ -72,16 +73,68 @@ export function formatSaveLabel(status: WriteSaveStatus, t: (key: string) => str
   return t('writeSaved')
 }
 
-function collectVisibleText(node: { type?: string; text?: string; content?: unknown[] } | undefined, acc: string[]): string[] {
+export function isInlineCompletionToggleShortcut(
+  event: Pick<
+    KeyboardEvent,
+    | 'code'
+    | 'ctrlKey'
+    | 'metaKey'
+    | 'shiftKey'
+    | 'altKey'
+    | 'repeat'
+    | 'isComposing'
+    | 'defaultPrevented'
+  >
+): boolean {
+  return (
+    event.code === 'Space' &&
+    event.shiftKey &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.altKey &&
+    !event.repeat &&
+    !event.isComposing &&
+    !event.defaultPrevented
+  )
+}
+
+type MarkdownTextNode = {
+  type?: string
+  text?: string
+  content?: unknown[]
+}
+
+const MARKDOWN_TEXT_BOUNDARY_NODES = new Set([
+  'paragraph',
+  'heading',
+  'blockquote',
+  'codeBlock',
+  'listItem',
+  'taskItem',
+  'tableCell',
+  'tableHeader',
+  'tableRow'
+])
+const WRITE_WORD_SEGMENTER = typeof Intl.Segmenter === 'function'
+  ? new Intl.Segmenter(undefined, { granularity: 'word' })
+  : null
+
+function appendVisibleTextBoundary(acc: string[]): void {
+  const previous = acc.at(-1)
+  if (previous && !/\s$/.test(previous)) acc.push(' ')
+}
+
+function collectVisibleText(node: MarkdownTextNode | undefined, acc: string[]): string[] {
   if (!node) return acc
   if (node.type === 'text' && typeof node.text === 'string') acc.push(node.text)
+  if (node.type === 'hardBreak') appendVisibleTextBoundary(acc)
   if (Array.isArray(node.content)) {
     for (const child of node.content) {
       if (child && typeof child === 'object') {
-        collectVisibleText(child as { type?: string; text?: string; content?: unknown[] }, acc)
+        collectVisibleText(child as MarkdownTextNode, acc)
       }
     }
   }
+  if (node.type && MARKDOWN_TEXT_BOUNDARY_NODES.has(node.type)) appendVisibleTextBoundary(acc)
   return acc
 }
 
@@ -93,10 +146,21 @@ function visibleTextFromMarkdown(markdown: string): string {
   }
 }
 
+function countWords(text: string): number {
+  if (WRITE_WORD_SEGMENTER) {
+    let count = 0
+    for (const segment of WRITE_WORD_SEGMENTER.segment(text)) {
+      if (segment.isWordLike) count += 1
+    }
+    return count
+  }
+  return text.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu)?.length ?? 0
+}
+
 export function computeWriteDocumentStats(content: string, isMarkdown: boolean): WriteDocumentStats {
   const visibleText = isMarkdown ? visibleTextFromMarkdown(content) : content
   const characterCount = Array.from(visibleText.replace(/\s+/g, '')).length
-  return { characterCount }
+  return { characterCount, wordCount: countWords(visibleText) }
 }
 
 export function clamp(value: number, min: number, max: number): number {

@@ -12,6 +12,7 @@ import {
   DEFAULT_GIT_BRANCH_PREFIX,
   DEFAULT_LOG_RETENTION_DAYS,
   DEFAULT_WRITE_WORKSPACE_ROOT,
+  DEFAULT_WRITE_WELCOME_FILE_NAME,
   defaultClawSettings,
   defaultKunRuntimeSettings,
   defaultModelProviderSettings,
@@ -205,7 +206,7 @@ async function ensureManagedWorkspaceRootsExist(settings: AppSettingsV1): Promis
   await mkdir(DEFAULT_WRITE_WORKSPACE_ROOT_ABSOLUTE, { recursive: true })
   await mkdir(DEFAULT_CONVERSATION_WORKSPACE_ROOT_ABSOLUTE, { recursive: true })
 
-  const welcomePath = join(DEFAULT_WRITE_WORKSPACE_ROOT_ABSOLUTE, 'welcome.md')
+  const welcomePath = join(DEFAULT_WRITE_WORKSPACE_ROOT_ABSOLUTE, DEFAULT_WRITE_WELCOME_FILE_NAME)
   try {
     await writeFile(welcomePath, WELCOME_MARKDOWN, { encoding: 'utf8', flag: 'wx' })
   } catch (error) {

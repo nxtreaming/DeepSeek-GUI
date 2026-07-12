@@ -50,6 +50,9 @@ export const WRITE_QUICK_ACTION_BUILTIN_IDS = [
   'critique'
 ] as const
 
+/** Managed seed file created in Kun's default writing space. */
+export const DEFAULT_WRITE_WELCOME_FILE_NAME = 'welcome.md'
+
 // Retired built-ins: pristine stored rows (label and prompt empty, i.e. "use
 // the built-in defaults") are dropped on normalization since the defaults no
 // longer exist. Customized rows survive as ordinary custom actions.

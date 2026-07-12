@@ -1,5 +1,6 @@
 import { mkdir } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { buildRouter } from './routes/index.js'
 import type { ServerRuntime } from './routes/server-runtime.js'
 import { startNodeHttpServer, type NodeHttpServerHandle } from './node-http-server.js'
@@ -1109,6 +1110,16 @@ export async function createKunServeRuntime(
 	  const applyConfigOnce = async (
 	    request: RuntimeConfigApplyRequest
 	  ): Promise<RuntimeConfigApplyResponse> => {
+	    if (
+	      request.serve?.observability !== undefined &&
+	      !isDeepStrictEqual(request.serve.observability, activeOptions.observability ?? {})
+	    ) {
+	      return {
+	        ok: false,
+	        code: 'restart_required',
+	        message: 'observability exporter changes require a runtime restart'
+	      }
+	    }
 	    const nextOptions = await hydrateLegacyCredentialOptions(
 	      mergeRuntimeConfigApplyOptions(activeOptions, request),
 	      legacyCredentialMigration
@@ -1486,7 +1497,11 @@ export async function createKunServeRuntime(
         shutdownAllLspSessions()
         await mcpProviders.close()
       } finally {
-        await stores.shutdown?.()
+        try {
+          await agentObservability?.shutdown()
+        } finally {
+          await stores.shutdown?.()
+        }
       }
     }
   }

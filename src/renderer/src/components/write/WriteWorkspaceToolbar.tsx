@@ -10,7 +10,8 @@ import {
   Loader2,
   Presentation,
   Save,
-  Sparkles
+  Sparkles,
+  WandSparkles
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { WriteExportFormat } from '@shared/write-export'
@@ -34,6 +35,7 @@ type Props = {
   activeFileName: string
   activeFilePath: string
   documentStatsLabel: string | null
+  inlineCompletionEnabled: boolean
   assistantOpen: boolean
   exportInFlight: boolean
   exportMenuOpen: boolean
@@ -47,6 +49,7 @@ type Props = {
   onExportFile: (format: WriteExportFormat) => void
   onGeneratePresentation: () => void
   onSave: () => void
+  onToggleInlineCompletion: () => void
   onToggleLeftSidebar: () => void
   previewMode: WritePreviewMode
   presentationEnabled: boolean
@@ -69,6 +72,7 @@ export function WriteWorkspaceToolbar({
   activeFileName,
   activeFilePath,
   documentStatsLabel,
+  inlineCompletionEnabled,
   assistantOpen,
   exportInFlight,
   exportMenuOpen,
@@ -82,6 +86,7 @@ export function WriteWorkspaceToolbar({
   onExportFile,
   onGeneratePresentation,
   onSave,
+  onToggleInlineCompletion,
   onToggleLeftSidebar,
   previewMode,
   presentationEnabled,
@@ -248,6 +253,17 @@ export function WriteWorkspaceToolbar({
 
           <div className="write-workspace-toolbar-actions flex min-w-0 items-center justify-end gap-1.5">
             {activeFileIsText ? <WriteFontSizeControl /> : null}
+            <button
+              type="button"
+              onClick={onToggleInlineCompletion}
+              disabled={!activeFileIsText || readOnly}
+              className={`${toolbarIconButtonClass(inlineCompletionEnabled)} disabled:cursor-not-allowed disabled:opacity-40`}
+              title={`${t(inlineCompletionEnabled ? 'writeInlineCompletionOn' : 'writeInlineCompletionOff')} · ${t('writeInlineCompletionShortcut')}`}
+              aria-label={t(inlineCompletionEnabled ? 'writeInlineCompletionOn' : 'writeInlineCompletionOff')}
+              aria-pressed={inlineCompletionEnabled}
+            >
+              <WandSparkles className="h-4 w-4" strokeWidth={1.85} />
+            </button>
             <button
               type="button"
               onClick={onGeneratePresentation}

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   computeWriteDocumentStats,
   inlineAgentPlacement,
+  isInlineCompletionToggleShortcut,
   type WriteInlineAgentPosition
 } from './write-workspace-view-utils'
 
@@ -9,13 +10,53 @@ describe('computeWriteDocumentStats', () => {
   it('counts visible markdown text instead of syntax markers', () => {
     const stats = computeWriteDocumentStats('# 标题\n\n- 第一项\n- 第二项 **加粗**\n', true)
 
-    expect(stats).toEqual({ characterCount: 10 })
+    expect(stats).toEqual({ characterCount: 10, wordCount: 6 })
   })
 
   it('counts non-whitespace characters for plain text files', () => {
     const stats = computeWriteDocumentStats('Hello world\n  2026  ', false)
 
-    expect(stats).toEqual({ characterCount: 14 })
+    expect(stats).toEqual({ characterCount: 14, wordCount: 3 })
+  })
+
+  it('does not merge words across Markdown node boundaries', () => {
+    const stats = computeWriteDocumentStats('first paragraph\n\nsecond paragraph', true)
+
+    expect(stats.wordCount).toBe(4)
+  })
+
+  it('does not split a visible word at inline Markdown mark boundaries', () => {
+    const stats = computeWriteDocumentStats('inter**nation**al [foot](https://example.com)note', true)
+
+    expect(stats).toEqual({ characterCount: 21, wordCount: 2 })
+  })
+})
+
+describe('isInlineCompletionToggleShortcut', () => {
+  const event = (overrides: Partial<KeyboardEvent> = {}) => ({
+    code: 'Space',
+    ctrlKey: true,
+    metaKey: false,
+    shiftKey: true,
+    altKey: false,
+    repeat: false,
+    isComposing: false,
+    defaultPrevented: false,
+    ...overrides
+  }) as KeyboardEvent
+
+  it('accepts Ctrl/Command + Shift + Space once', () => {
+    expect(isInlineCompletionToggleShortcut(event())).toBe(true)
+    expect(isInlineCompletionToggleShortcut(event({ ctrlKey: false, metaKey: true }))).toBe(true)
+  })
+
+  it('rejects incomplete, repeated, composing, and Alt-modified shortcuts', () => {
+    expect(isInlineCompletionToggleShortcut(event({ shiftKey: false }))).toBe(false)
+    expect(isInlineCompletionToggleShortcut(event({ repeat: true }))).toBe(false)
+    expect(isInlineCompletionToggleShortcut(event({ isComposing: true }))).toBe(false)
+    expect(isInlineCompletionToggleShortcut(event({ defaultPrevented: true }))).toBe(false)
+    expect(isInlineCompletionToggleShortcut(event({ altKey: true }))).toBe(false)
+    expect(isInlineCompletionToggleShortcut(event({ code: 'Enter' }))).toBe(false)
   })
 })
 

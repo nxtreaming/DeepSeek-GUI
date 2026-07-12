@@ -155,6 +155,40 @@ describe('runtime factory usage carryover', () => {
     }
   })
 
+  it('requires restart instead of acknowledging an unapplied observability change', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'kun-runtime-observability-apply-'))
+    tempDirs.push(dataDir)
+    const runtime = await createKunServeRuntime({
+      host: '127.0.0.1',
+      port: 0,
+      dataDir,
+      runtimeToken: 'tok',
+      apiKey: 'sk-default',
+      baseUrl: 'https://api.example.test/v1',
+      model: 'model-before',
+      approvalPolicy: 'auto',
+      sandboxMode: 'danger-full-access',
+      tokenEconomyMode: false,
+      insecure: false,
+      storage: { backend: 'file' },
+      capabilities: KunCapabilitiesConfig.parse({})
+    })
+
+    try {
+      await expect(runtime.applyConfig({
+        serve: {
+          observability: { enabled: true, exporter: 'otlp-http-json' }
+        }
+      })).resolves.toEqual({
+        ok: false,
+        code: 'restart_required',
+        message: 'observability exporter changes require a runtime restart'
+      })
+    } finally {
+      await runtime.shutdown?.()
+    }
+  })
+
   it('clears per-thread runtime memory when a thread is deleted', async () => {
     const dataDir = await mkdtemp(join(tmpdir(), 'kun-runtime-delete-'))
     tempDirs.push(dataDir)

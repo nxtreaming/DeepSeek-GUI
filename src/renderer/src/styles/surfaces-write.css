@@ -45,6 +45,21 @@
   container-name: write-workspace;
 }
 
+.write-workspace-view.is-focus-mode {
+  container-type: normal;
+  overflow: visible;
+}
+
+.write-focus-mode-shell {
+  padding-top: calc(var(--ds-window-controls-safe-block, 0px) + 0.75rem);
+}
+
+@media (min-width: 640px) {
+  .write-focus-mode-shell {
+    padding-top: calc(var(--ds-window-controls-safe-block, 0px) + 1.5rem);
+  }
+}
+
 .write-pdf-viewer {
   background: transparent;
   user-select: text;

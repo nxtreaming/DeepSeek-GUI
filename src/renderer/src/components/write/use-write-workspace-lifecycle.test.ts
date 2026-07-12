@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { pendingWriteAgentReviewMatches } from './use-write-workspace-lifecycle'
+import {
+  canApplyPendingWriteAgentReviewDirectly,
+  pendingWriteAgentReviewMatches
+} from './use-write-workspace-lifecycle'
 
 describe('write workspace lifecycle guards', () => {
   const review = {
@@ -28,5 +31,26 @@ describe('write workspace lifecycle guards', () => {
       activeFilePath: '/workspace/a.md',
       documentEpoch: 4
     }, review)).toBe(false)
+  })
+
+  it('does not directly apply an external review over a dirty or failed local draft', () => {
+    expect(canApplyPendingWriteAgentReviewDirectly({
+      workspaceRoot: '/workspace',
+      activeFilePath: '/workspace/a.md',
+      documentEpoch: 3,
+      saveStatus: 'dirty'
+    }, review)).toBe(false)
+    expect(canApplyPendingWriteAgentReviewDirectly({
+      workspaceRoot: '/workspace',
+      activeFilePath: '/workspace/a.md',
+      documentEpoch: 3,
+      saveStatus: 'error'
+    }, review)).toBe(false)
+    expect(canApplyPendingWriteAgentReviewDirectly({
+      workspaceRoot: '/workspace',
+      activeFilePath: '/workspace/a.md',
+      documentEpoch: 3,
+      saveStatus: 'saved'
+    }, review)).toBe(true)
   })
 })

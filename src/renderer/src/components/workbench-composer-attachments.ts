@@ -44,3 +44,12 @@ export function updateComposerAttachmentsByScope(
     [scope]: next
   }
 }
+
+export function removeComposerAttachmentsById(
+  current: AttachmentReference[],
+  ids: readonly string[]
+): AttachmentReference[] {
+  if (ids.length === 0) return current
+  const capturedIds = new Set(ids)
+  return current.filter((attachment) => !capturedIds.has(attachment.id))
+}

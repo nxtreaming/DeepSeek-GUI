@@ -54,6 +54,7 @@ export type QueuedUserMessage = {
   /** True only for the product Design surface; Code whiteboards leave this unset. */
   guiDesignMode?: boolean
   guiDesignArtifact?: GuiDesignArtifactMessageContext
+  writeContext?: WriteAssistantMessageContext
 }
 
 /**
@@ -76,6 +77,17 @@ export type GuiDesignArtifactMessageContext = {
   relativePath: string
 }
 
+/** Renderer-only routing context that keeps a Write send bound to the file and
+ * conversation selected when the user submitted it. */
+export type WriteAssistantMessageContext = {
+  workspaceRoot: string
+  activeFilePath: string | null
+  documentEpoch: number
+  contentRevision: number
+  /** Filled after the first explicit ensure; queued sends keep this identity. */
+  threadId?: string
+}
+
 export type SendMessageOverrides = {
   queued?: QueuedUserMessage
   model?: string
@@ -91,6 +103,7 @@ export type SendMessageOverrides = {
   attachmentIds?: string[]
   attachments?: AttachmentReference[]
   fileReferences?: UserFileReference[]
+  writeContext?: WriteAssistantMessageContext
 }
 
 export type InitialSetupMode = 'required' | 'preview'

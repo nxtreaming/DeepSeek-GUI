@@ -283,6 +283,7 @@ export function WriteWorkspaceView({
     readOnly: renderSafety.readOnly,
     reviewActive,
     pendingAgentReview,
+    reviewSurfaceKey: previewMode,
     saveTimerRef,
     markdownHandleRef,
     flushSave,
@@ -1077,7 +1078,7 @@ export function WriteWorkspaceView({
         onGeneratePresentation={() => void generatePresentation()}
         onSave={() => {
           if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
-          void flushSave(workspaceRoot)
+          void flushSave(workspaceRoot, { resolveExternalConflict: 'keep-local' })
         }}
         onToggleLeftSidebar={onToggleLeftSidebar}
       />
@@ -1129,7 +1130,7 @@ export function WriteWorkspaceView({
             onSaveShortcut={() => {
               if (renderSafety.readOnly) return
               if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
-              void flushSave(workspaceRoot)
+              void flushSave(workspaceRoot, { resolveExternalConflict: 'keep-local' })
             }}
             onImagePasteSaved={() => {
               setFileError(null)

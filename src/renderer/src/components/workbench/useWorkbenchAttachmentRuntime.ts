@@ -10,6 +10,7 @@ import { useCanvasImageAutoAttachment } from '../design/useCanvasImageAutoAttach
 import {
   composerAttachmentScopeForSurface,
   createEmptyComposerAttachmentsByScope,
+  removeComposerAttachmentsById,
   updateComposerAttachmentsByScope,
   type ComposerAttachmentScope,
   type ComposerAttachmentUpdater
@@ -128,6 +129,17 @@ export function useWorkbenchAttachmentRuntime({
     if (scope === 'design') clearCanvasImageAutoAttachment()
   }
 
+  const removeComposerAttachments = (
+    ids: readonly string[],
+    scope = composerAttachmentScopeRef.current
+  ): void => {
+    if (ids.length === 0) return
+    setComposerAttachmentsForScope(
+      scope,
+      (current) => removeComposerAttachmentsById(current, ids)
+    )
+  }
+
   const {
     handlePickAttachments,
     handlePasteClipboardImage,
@@ -155,6 +167,7 @@ export function useWorkbenchAttachmentRuntime({
     getAttachmentScope: () => composerAttachmentScopeRef.current,
     handlePasteClipboardImage,
     handlePickAttachments,
+    removeComposerAttachments,
     removeComposerAttachment,
     setAttachmentUploadError,
     webAccessAvailable

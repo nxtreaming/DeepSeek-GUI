@@ -279,11 +279,13 @@ export function createNavigationActions(
       return null
     }
     const writeState = useWriteWorkspaceStore.getState()
-    const targetFilePath = activeFilePath?.trim() || (
-      workspaceRootIdentityKey(writeState.workspaceRoot) === workspaceRootIdentityKey(targetWorkspace)
-        ? writeState.activeFilePath?.trim() || undefined
-        : undefined
-    )
+    const targetFilePath = activeFilePath !== undefined
+      ? activeFilePath.trim() || undefined
+      : (
+          workspaceRootIdentityKey(writeState.workspaceRoot) === workspaceRootIdentityKey(targetWorkspace)
+            ? writeState.activeFilePath?.trim() || undefined
+            : undefined
+        )
     if (state.runtimeConnection !== 'ready') {
       set({ error: i18n.t('common:runtimeActionNeedsConnection') })
       return null

@@ -35,7 +35,12 @@ import {
   buildCodeRuntimePrompt,
   getActiveAgentApiKey
 } from '@shared/app-settings'
-import type { ChatState, ChatStoreGet, ChatStoreSet } from './chat-store-types'
+import type {
+  ChatState,
+  ChatStoreGet,
+  ChatStoreSet,
+  WriteAssistantMessageContext
+} from './chat-store-types'
 import {
   accountIdForComposerSelection,
   activeClawChannel,
@@ -72,9 +77,11 @@ import {
   pruneWriteThreadRegistry,
   readWriteThreadRegistry,
   saveWriteThreadRegistry,
+  writeFileKey,
   writeThreadBelongsToWorkspace,
   writeWorkspaceForThreadId
 } from '../write/write-thread-registry'
+import { useWriteWorkspaceStore } from '../write/write-workspace-store'
 import {
   clearBusyWatchdog,
   resetBusyRecoveryAttempts,
@@ -120,6 +127,20 @@ type StoreActionContext = {
 
 let drainingQueuedMessages = false
 const checkpointGitAvailability = new GitCheckpointAvailabilityCache()
+
+function activeWriteMessageContextMatches(context: WriteAssistantMessageContext): boolean {
+  const state = useWriteWorkspaceStore.getState()
+  return (
+    writeFileKey(state.workspaceRoot) === writeFileKey(context.workspaceRoot) &&
+    writeFileKey(state.activeFilePath) === writeFileKey(context.activeFilePath) &&
+    state.documentEpoch === context.documentEpoch &&
+    state.contentRevision === context.contentRevision &&
+    state.saveStatus === 'saved' &&
+    state.fileContent === state.persistedContent &&
+    state.pendingAgentReview === null &&
+    !state.reviewActive
+  )
+}
 
 export function createThreadActions(
   { set, get, sseAbortRef }: StoreActionContext
@@ -619,6 +640,15 @@ export function createThreadActions(
   sendMessage: async (text, mode, overrides) => {
     const trimmedText = text.trim()
     if (!trimmedText) return false
+    const queued = overrides?.queued
+    let writeContext = queued?.writeContext ?? overrides?.writeContext
+    const requireActiveWriteContext = Boolean(writeContext && !queued)
+    const activeWriteContextIsValid = (): boolean => Boolean(
+      !writeContext ||
+      !requireActiveWriteContext ||
+      (get().route === 'write' && activeWriteMessageContextMatches(writeContext))
+    )
+    if (!activeWriteContextIsValid()) return false
     if (get().runtimeConnection !== 'ready') {
       set({ error: i18n.t('common:runtimeActionNeedsConnection') })
       return false
@@ -628,26 +658,39 @@ export function createThreadActions(
       const activeThread = state.activeThreadId
         ? state.threads.find((thread) => thread.id === state.activeThreadId) ?? null
         : null
-      let workspaceRoot = state.route === 'write'
-        ? await readActiveWriteWorkspace(state.workspaceRoot)
-        : normalizeWorkspaceRoot(activeThread?.workspace)
+      let workspaceRoot = writeContext
+        ? normalizeWorkspaceRoot(writeContext.workspaceRoot)
+        : state.route === 'write'
+          ? await readActiveWriteWorkspace(state.workspaceRoot)
+          : normalizeWorkspaceRoot(activeThread?.workspace)
+      if (!activeWriteContextIsValid()) return false
       if (!workspaceRoot) {
         workspaceRoot = normalizeWorkspaceRoot((await rendererRuntimeClient.getSettings()).workspaceRoot)
+        if (!activeWriteContextIsValid()) return false
       }
       if (workspaceRoot && !(await workspaceDirectoryExists(workspaceRoot))) {
         set({ error: workspaceMissingError() })
         await showWorkspaceMissingDialog(workspaceRoot)
         return false
       }
+      if (!activeWriteContextIsValid()) return false
     }
     const p = getProvider()
-    if (get().route === 'write') {
-      const writeThreadId = await get().ensureWriteThreadForWorkspace()
+    if (writeContext || get().route === 'write') {
+      const writeThreadId = await get().ensureWriteThreadForWorkspace(
+        writeContext?.workspaceRoot,
+        writeContext ? writeContext.activeFilePath ?? '' : undefined
+      )
       if (!writeThreadId) return false
+      if (writeContext?.threadId && writeThreadId !== writeContext.threadId) return false
+      if (writeContext && !writeContext.threadId) {
+        writeContext = { ...writeContext, threadId: writeThreadId }
+      }
+      if (!activeWriteContextIsValid()) return false
     }
     const hasPendingActiveTurn = threadHasPendingRuntimeWork(get().blocks)
     if (get().busy || hasPendingActiveTurn) {
-      if (overrides?.guiPlan) {
+      if (overrides?.guiPlan || writeContext) {
         set({ error: i18n.t('common:composerQueuePlaceholder') })
         return false
       }
@@ -695,6 +738,7 @@ export function createThreadActions(
             ...(overrides?.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
             ...(overrides?.guiDesignMode ? { guiDesignMode: true } : {}),
             ...(overrides?.guiDesignArtifact ? { guiDesignArtifact: overrides.guiDesignArtifact } : {}),
+            ...(writeContext ? { writeContext } : {}),
             ...(attachmentIds?.length ? { attachmentIds } : {}),
             ...(attachments?.length ? { attachments } : {}),
             ...(fileReferences?.length ? { fileReferences } : {})
@@ -710,7 +754,6 @@ export function createThreadActions(
       return true
     }
     const now = Date.now()
-    const queued = overrides?.queued
     const userBlockId = queued?.id ?? `u-${now}`
     const attachmentIds =
       queued?.attachmentIds ??

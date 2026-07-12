@@ -93,7 +93,10 @@ export type WriteWorkspaceState = {
     }
   ) => Promise<boolean>
   syncActiveImageFromDisk: (workspaceRoot: string, path?: string) => Promise<boolean>
-  flushSave: (workspaceRoot: string) => Promise<boolean>
+  flushSave: (
+    workspaceRoot: string,
+    options?: { resolveExternalConflict?: 'keep-local' }
+  ) => Promise<boolean>
   createFile: (workspaceRoot: string, path: string, content?: string) => Promise<string | null>
   createDirectory: (workspaceRoot: string, path: string) => Promise<string | null>
   renameEntry: (workspaceRoot: string, path: string, newName: string) => Promise<string | null>

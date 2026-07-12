@@ -79,7 +79,7 @@ test('selects host-native packaged resources and never launches desktop Electron
   assert.equal(desktopApplicationEntry('/packaged/Resources', '/packaged/Kun', '/packaged/Kun'), undefined)
   assert.equal(
     desktopApplicationEntry('/packaged/Resources', '/host/Electron', '/packaged/Kun'),
-    resolve('/packaged/Resources', 'app.asar')
+    join('/packaged/Resources', 'app.asar')
   )
   assert.equal(
     desktopSmokeSettings(43123, '/isolated-home/.kun/default_workspace').workspaceRoot,
@@ -92,7 +92,11 @@ test('selects host-native packaged resources and never launches desktop Electron
       appData: '/isolated-app-data',
       explicitUserData: '/isolated-user-data'
     }),
-    ['/isolated-user-data', '/isolated-app-data/Kun', '/isolated-home/.config/Kun']
+    [
+      '/isolated-user-data',
+      join('/isolated-app-data', 'Kun'),
+      join('/isolated-home', '.config', 'Kun')
+    ]
   )
 
   const native = createDesktopLaunchPlan({

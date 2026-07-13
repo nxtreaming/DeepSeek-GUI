@@ -68,6 +68,8 @@ const PRESETS: Array<{
   { preset: 'rotate', labelKey: 'canvasMotionPresetRotate', fallback: 'Rotate' }
 ]
 
+const TIMELINE_TICKS = [0, 0.25, 0.5, 0.75, 1] as const
+
 type DragState = {
   trackId: string
   keyframeId: string
@@ -183,6 +185,7 @@ export function CanvasMotionDock(): ReactElement | null {
   const frameName = frameId === document.rootId
     ? t('canvasMotionCanvasTimeline', 'Canvas timeline')
     : shapeLabel(document.objects[frameId], t('canvasMotionFrameTimeline', 'Frame timeline'))
+  const playheadPercent = `${durationMs > 0 ? currentTimeMs / durationMs * 100 : 0}%`
   const lastFrameRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -386,7 +389,8 @@ export function CanvasMotionDock(): ReactElement | null {
     <section
       aria-label={t('canvasMotionDock', 'Motion dock')}
       data-motion-timeline
-      className="ds-no-drag pointer-events-auto absolute inset-x-3 bottom-3 z-50 flex h-[246px] min-h-0 flex-col overflow-hidden rounded-[18px] border border-ds-border bg-white/94 text-ds-ink shadow-[0_18px_52px_rgba(15,23,42,0.18)] backdrop-blur-2xl dark:bg-ds-card/94"
+      className="ds-no-drag pointer-events-auto absolute inset-x-3 bottom-3 z-50 flex min-h-0 flex-col overflow-hidden rounded-[18px] border border-ds-border bg-white/94 text-ds-ink shadow-[0_18px_52px_rgba(15,23,42,0.18)] backdrop-blur-2xl dark:bg-ds-card/94"
+      style={{ height: 'var(--canvas-motion-dock-height)' }}
       onKeyDown={(event) => {
         const target = event.target as HTMLElement
         const editing = target.matches('input, textarea, select, button, [contenteditable="true"]')
@@ -413,13 +417,23 @@ export function CanvasMotionDock(): ReactElement | null {
       }}
       tabIndex={-1}
     >
-      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-ds-border-muted px-3">
-        <span className="hidden shrink-0 rounded-full bg-ds-hover/60 px-2 py-1 text-[9.5px] font-semibold uppercase tracking-[0.06em] text-ds-muted min-[1180px]:inline-flex">
-          {t('canvasMotionContainer', 'Container Motion')}
-        </span>
+      <header
+        className="flex h-12 shrink-0 items-center gap-1.5 border-b border-ds-border-muted px-2.5"
+        data-motion-transport="container"
+      >
+        <div className="flex w-[148px] shrink-0 items-center gap-2 px-1">
+          <span className="grid h-6 w-6 shrink-0 place-items-center rounded-[7px] bg-accent-soft text-accent">
+            <Sparkles className="h-3 w-3" />
+          </span>
+          <div className="min-w-0 leading-tight">
+            <div className="text-[10px] font-semibold text-ds-ink">{t('canvasMotionMode', 'Motion')}</div>
+            <div className="truncate text-[8.5px] text-ds-faint" title={frameName}>{frameName}</div>
+          </div>
+        </div>
+        <span className="mx-0.5 h-5 w-px shrink-0 bg-ds-border-muted" />
         <button
           type="button"
-          className="grid h-7 w-7 place-items-center rounded-[8px] text-ds-muted hover:bg-ds-hover hover:text-ds-ink disabled:opacity-40"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-[8px] bg-accent text-white shadow-sm hover:opacity-90 disabled:bg-ds-hover disabled:text-ds-faint disabled:shadow-none"
           onClick={togglePlayback}
           disabled={!timeline || reducedMotion}
           title={playing ? t('canvasMotionPause', 'Pause') : t('canvasMotionPlay', 'Play')}
@@ -429,7 +443,7 @@ export function CanvasMotionDock(): ReactElement | null {
         </button>
         <button
           type="button"
-          className="grid h-7 w-7 place-items-center rounded-[8px] text-ds-muted hover:bg-ds-hover hover:text-ds-ink"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-[8px] text-ds-faint hover:bg-ds-hover hover:text-ds-ink"
           onClick={() => {
             useCanvasMotionStore.getState().setPlaying(false)
             useCanvasMotionStore.getState().setDirection(1)
@@ -440,7 +454,7 @@ export function CanvasMotionDock(): ReactElement | null {
         >
           <RotateCcw className="h-3.5 w-3.5" />
         </button>
-        <span className="w-[88px] text-[11px] tabular-nums text-ds-muted">
+        <span className="w-[94px] shrink-0 text-center text-[10px] tabular-nums text-ds-muted">
           {Math.round(currentTimeMs)} / {Math.round(durationMs)} ms
         </span>
         <input
@@ -453,25 +467,30 @@ export function CanvasMotionDock(): ReactElement | null {
             useCanvasMotionStore.getState().setPlaying(false)
             useCanvasMotionStore.getState().setCurrentTimeMs(Number(event.target.value))
           }}
-          className="canvas-inspector-range min-w-[120px] flex-1"
+          className="canvas-inspector-range min-w-[100px] flex-1"
           aria-label={t('canvasMotionPlayhead', 'Motion playhead')}
         />
-        <label className="flex items-center gap-1 text-[10px] text-ds-faint">
-          <span>{t('canvasMotionDuration', 'Duration')}</span>
-          <input
-            key={durationMs}
-            type="number"
-            min={1}
-            max={600000}
-            defaultValue={durationMs}
-            onBlur={(event) => configure({ durationMs: Number(event.target.value) })}
-            className="h-7 w-[68px] rounded-[7px] bg-ds-hover/50 px-2 text-[11px] tabular-nums text-ds-ink outline-none"
-          />
+        <label className="hidden shrink-0 items-center gap-1 min-[980px]:flex">
+          <span className="hidden text-[9px] text-ds-faint min-[1180px]:inline">
+            {t('canvasMotionDuration', 'Duration')}
+          </span>
+          <span className="flex h-7 items-center rounded-[7px] bg-ds-hover/55 px-1.5">
+            <input
+              key={durationMs}
+              type="number"
+              min={1}
+              max={600000}
+              defaultValue={durationMs}
+              onBlur={(event) => configure({ durationMs: Number(event.target.value) })}
+              className="w-[52px] bg-transparent text-right text-[10px] tabular-nums text-ds-ink outline-none"
+            />
+            <span className="ml-1 text-[8.5px] text-ds-faint">ms</span>
+          </span>
         </label>
         <select
           value={timeline?.playback ?? 'once'}
           onChange={(event) => configure({ playback: event.target.value as CanvasMotionPlaybackMode })}
-          className="h-7 rounded-[7px] bg-ds-hover/50 px-2 text-[10.5px] text-ds-muted outline-none"
+          className="hidden h-7 shrink-0 rounded-[7px] bg-ds-hover/55 px-2 text-[10px] text-ds-muted outline-none min-[900px]:block"
           aria-label={t('canvasMotionPlaybackMode', 'Playback mode')}
         >
           <option value="once">{t('canvasMotionOnce', 'Once')}</option>
@@ -481,14 +500,14 @@ export function CanvasMotionDock(): ReactElement | null {
         <select
           value={rate}
           onChange={(event) => useCanvasMotionStore.getState().setRate(Number(event.target.value))}
-          className="h-7 rounded-[7px] bg-ds-hover/50 px-2 text-[10.5px] text-ds-muted outline-none"
+          className="hidden h-7 shrink-0 rounded-[7px] bg-ds-hover/55 px-2 text-[10px] text-ds-muted outline-none min-[820px]:block"
           aria-label={t('canvasMotionPlaybackRate', 'Playback rate')}
         >
           <option value={0.5}>0.5×</option>
           <option value={1}>1×</option>
           <option value={2}>2×</option>
         </select>
-        <label className="flex items-center gap-1 text-[10px] text-ds-faint">
+        <label className="hidden shrink-0 items-center gap-1 text-[9px] text-ds-faint min-[1120px]:flex">
           <span>{t('canvasMotionZoom', 'Zoom')}</span>
           <input
             type="range"
@@ -497,18 +516,19 @@ export function CanvasMotionDock(): ReactElement | null {
             step={0.25}
             value={timelineZoom}
             onChange={(event) => useCanvasMotionStore.getState().setTimelineZoom(Number(event.target.value))}
-            className="w-16"
+            className="w-14"
             aria-label={t('canvasMotionTimelineZoom', 'Timeline zoom')}
           />
         </label>
         <button
           type="button"
-          className={`h-7 rounded-[8px] px-2.5 text-[10.5px] font-medium transition ${
-            autoKey ? 'bg-accent-soft text-accent' : 'bg-ds-hover/45 text-ds-muted hover:text-ds-ink'
+          className={`inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[8px] px-2 text-[9.5px] font-medium transition ${
+            autoKey ? 'bg-accent-soft text-accent' : 'text-ds-muted hover:bg-ds-hover hover:text-ds-ink'
           }`}
           onClick={() => useCanvasMotionStore.getState().setAutoKey(!autoKey)}
           aria-pressed={autoKey}
         >
+          <span className={`h-1.5 w-1.5 rounded-full ${autoKey ? 'bg-accent' : 'bg-ds-faint/60'}`} />
           {t('canvasMotionAutoKey', 'Auto-key')}
         </button>
         <button
@@ -528,64 +548,91 @@ export function CanvasMotionDock(): ReactElement | null {
         </div>
       ) : null}
 
-      <div className="flex min-h-0 flex-1">
-        <aside className="flex w-[176px] shrink-0 flex-col border-r border-ds-border-muted">
-          <div className="border-b border-ds-border-muted px-3 py-2">
-            <div className="truncate text-[11px] font-medium text-ds-ink">{frameName}</div>
-            <div className="mt-0.5 text-[9.5px] text-ds-faint">
-              {t('canvasMotionContainerHint', 'Animate the selected layer as one canvas object')}
-            </div>
-            <div className="mt-1 flex flex-wrap gap-1">
+      <div className="flex h-11 shrink-0 items-stretch border-b border-ds-border-muted bg-ds-hover/[0.14]">
+        <div className="flex w-[184px] shrink-0 flex-col justify-center border-r border-ds-border-muted px-2.5">
+          <div className="flex items-center gap-1.5">
+            <span className="shrink-0 rounded-[5px] bg-accent-soft px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.05em] text-accent">
+              {t('canvasMotionContainer', 'Container Motion')}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[9.5px] font-medium text-ds-ink" title={frameName}>
+              {frameName}
+            </span>
+          </div>
+          <div className="mt-0.5 truncate text-[8.5px] text-ds-faint">
+            {t('canvasMotionContainerHint', 'Animate the selected layer as one canvas object')}
+          </div>
+        </div>
+        <div className="min-w-0 flex-1 overflow-x-auto">
+          <div className="flex h-full min-w-max items-center gap-2.5 px-3">
+            <div className="flex items-center gap-1">
+              <span className="mr-0.5 inline-flex items-center gap-1 text-[8.5px] font-semibold uppercase tracking-[0.06em] text-ds-faint">
+                <Sparkles className="h-2.5 w-2.5" />
+                {t('canvasMotionPresets', 'Presets')}
+              </span>
               {PRESETS.map(({ preset, labelKey, fallback }) => (
                 <button
                   key={preset}
                   type="button"
                   disabled={selectedShapeIds.length === 0}
                   onClick={() => applyPreset(preset)}
-                  className="inline-flex h-6 items-center gap-1 rounded-[7px] bg-accent-soft px-1.5 text-[9.5px] font-medium text-accent hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-35"
+                  className="h-6 rounded-[7px] bg-accent-soft px-2 text-[9.5px] font-medium text-accent hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-35"
                 >
-                  <Sparkles className="h-2.5 w-2.5" />
                   {t(labelKey, fallback)}
                 </button>
               ))}
             </div>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5">
-            <div className="mb-1 text-[9.5px] uppercase tracking-[0.08em] text-ds-faint">
-              {t('canvasMotionAddProperty', 'Add property')}
-            </div>
-            <div className="grid grid-cols-2 gap-1">
+            <span className="h-5 w-px bg-ds-border-muted" />
+            <div className="flex items-center gap-0.5">
+              <span className="mr-0.5 text-[8.5px] font-semibold uppercase tracking-[0.06em] text-ds-faint">
+                {t('canvasMotionAddProperty', 'Add property')}
+              </span>
               {PROPERTY_LABELS.map(({ property, labelKey, fallback }) => (
                 <button
                   key={property}
                   type="button"
                   disabled={selectedShapeIds.length === 0}
                   onClick={() => addTracks(property)}
-                  className="flex h-6 items-center gap-1 rounded-[6px] px-1.5 text-left text-[9.5px] text-ds-muted hover:bg-ds-hover hover:text-ds-ink disabled:opacity-35"
+                  className="inline-flex h-6 items-center gap-1 rounded-[7px] px-1.5 text-[9px] text-ds-muted hover:bg-ds-hover hover:text-ds-ink disabled:opacity-35"
                 >
-                  <Plus className="h-2.5 w-2.5" /> {t(labelKey, fallback)}
+                  <Plus className="h-2.5 w-2.5" />
+                  {t(labelKey, fallback)}
                 </button>
               ))}
             </div>
           </div>
-        </aside>
+        </div>
+      </div>
 
+      <div className="flex min-h-0 flex-1">
         <div className="min-w-0 flex-1 overflow-auto">
-          <div style={{ minWidth: `${Math.max(100, timelineZoom * 100)}%` }}>
-            <div className="sticky top-0 z-10 flex h-7 items-end border-b border-ds-border-muted bg-white/92 dark:bg-ds-card/92">
-              {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (
-                <span
-                  key={ratio}
-                  className="absolute bottom-1 text-[9px] tabular-nums text-ds-faint"
-                  style={{ left: `${ratio * 100}%`, transform: ratio === 1 ? 'translateX(-100%)' : undefined }}
-                >
-                  {Math.round(durationMs * ratio)}
+          <div
+            data-motion-track-grid
+            style={{ minWidth: `${Math.max(100, timelineZoom * 100)}%` }}
+          >
+            <div className="sticky top-0 z-10 grid h-7 grid-cols-[184px_minmax(420px,1fr)] border-b border-ds-border-muted bg-white/96 dark:bg-ds-card/96">
+              <div className="sticky left-0 z-[2] flex items-center justify-between border-r border-ds-border-muted bg-white/96 px-2.5 dark:bg-ds-card/96">
+                <span className="text-[8.5px] font-semibold uppercase tracking-[0.06em] text-ds-faint">
+                  {t('canvasMotionTracks', 'Tracks')}
                 </span>
-              ))}
-              <span
-                className="pointer-events-none absolute bottom-0 top-0 w-px bg-accent"
-                style={{ left: `${durationMs > 0 ? currentTimeMs / durationMs * 100 : 0}%` }}
-              />
+                <span className="text-[8.5px] tabular-nums text-ds-faint">
+                  {timeline?.tracks.length ?? 0}
+                </span>
+              </div>
+              <div className="relative h-full">
+                {TIMELINE_TICKS.map((ratio) => (
+                  <span
+                    key={ratio}
+                    className="absolute bottom-1 text-[8.5px] tabular-nums text-ds-faint"
+                    style={{ left: `${ratio * 100}%`, transform: ratio === 1 ? 'translateX(-100%)' : undefined }}
+                  >
+                    {Math.round(durationMs * ratio)}
+                  </span>
+                ))}
+                <span
+                  className="pointer-events-none absolute inset-y-0 w-px bg-accent"
+                  style={{ left: playheadPercent }}
+                />
+              </div>
             </div>
             {svgPreview ? (
               <CanvasMotionSvgPreview preview={svgPreview} reducedMotion={reducedMotion} />
@@ -593,77 +640,101 @@ export function CanvasMotionDock(): ReactElement | null {
             {timeline?.tracks.length ? timeline.tracks.map((track, trackIndex) => {
               const selected = selectedTrackId === track.id
               const startsLayer = trackIndex === 0 || timeline.tracks[trackIndex - 1]?.targetShapeId !== track.targetShapeId
+              const property = PROPERTY_LABELS.find((item) => item.property === track.property)
+              const propertyLabel = t(property?.labelKey ?? track.property, property?.fallback ?? track.property)
               return (
                 <div key={track.id}>
                   {startsLayer ? (
-                    <div className="sticky left-0 flex h-6 items-center border-b border-ds-border-muted/70 bg-ds-hover/25 px-2 text-[9px] font-medium uppercase tracking-[0.08em] text-ds-faint">
-                      {shapeLabel(document.objects[track.targetShapeId], track.targetShapeId)}
+                    <div className="grid h-6 grid-cols-[184px_minmax(420px,1fr)] border-b border-ds-border-muted/70 bg-ds-hover/20">
+                      <div className="sticky left-0 z-[2] flex min-w-0 items-center gap-1.5 border-r border-ds-border-muted bg-ds-hover/70 px-2.5">
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent/70" />
+                        <span className="truncate text-[9px] font-semibold text-ds-muted">
+                          {shapeLabel(document.objects[track.targetShapeId], track.targetShapeId)}
+                        </span>
+                      </div>
+                      <div className="flex items-center px-3 text-[8.5px] uppercase tracking-[0.06em] text-ds-faint">
+                        {t('canvasMotionContainer', 'Container Motion')}
+                      </div>
                     </div>
                   ) : null}
                   <div
-                    className={`group flex h-8 items-center border-b border-ds-border-muted/70 ${selected ? 'bg-accent-soft/45' : 'hover:bg-ds-hover/35'}`}
+                    className={`group grid h-8 grid-cols-[184px_minmax(420px,1fr)] border-b border-ds-border-muted/70 ${selected ? 'bg-accent-soft/45' : 'hover:bg-ds-hover/30'}`}
                     onClick={() => useCanvasMotionStore.getState().selectKeyframe(track.id, null)}
                   >
-                  <button
-                    type="button"
-                    className="sticky left-0 z-[1] flex h-full w-[156px] shrink-0 items-center gap-1.5 border-r border-ds-border-muted bg-inherit px-2 text-left"
-                    title={`${shapeLabel(document.objects[track.targetShapeId], track.targetShapeId)} · ${track.property}`}
-                  >
-                    <Diamond className="h-2.5 w-2.5 shrink-0 text-accent" fill="currentColor" />
-                    <span className="min-w-0 flex-1 truncate text-[10px] text-ds-muted">
-                      {shapeLabel(document.objects[track.targetShapeId], track.targetShapeId)} · {track.property}
-                    </span>
-                  </button>
-                  <div className="relative h-full min-w-[320px] flex-1">
-                    <span className="absolute left-0 right-0 top-1/2 h-px bg-ds-border-muted" />
-                    {track.keyframes.map((keyframe) => {
-                      const displayedTime = drag?.trackId === track.id && drag.keyframeId === keyframe.id
-                        ? trackTime(track, { ...keyframe, timeMs: drag.timeMs })
-                        : trackTime(track, keyframe)
-                      const keyframeSelected = selectedKeyframeId === keyframe.id && selected
-                      return (
-                        <button
-                          key={keyframe.id}
-                          type="button"
-                          className={`absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-[2px] border transition ${
-                            keyframeSelected
-                              ? 'border-accent bg-accent shadow-[0_0_0_2px_rgba(101,87,255,.2)]'
-                              : 'border-ds-muted bg-white hover:border-accent dark:bg-ds-card'
-                          }`}
-                          style={{ left: `${Math.max(0, Math.min(100, displayedTime / durationMs * 100))}%` }}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            useCanvasMotionStore.getState().selectKeyframe(track.id, keyframe.id)
-                            useCanvasMotionStore.getState().setCurrentTimeMs(trackTime(track, keyframe))
-                          }}
-                          onPointerDown={(event) => beginKeyframeDrag(event, track, keyframe)}
-                          onFocus={() => useCanvasMotionStore.getState().selectKeyframe(track.id, keyframe.id)}
-                          aria-label={`${track.property} keyframe at ${Math.round(displayedTime)}ms`}
-                          title={`${Math.round(displayedTime)} ms · ${keyframe.value} · ${easingLabel(keyframe.easing)}`}
-                        />
-                      )
-                    })}
                     <button
                       type="button"
-                      className="absolute right-1 top-1/2 hidden h-5 w-5 -translate-y-1/2 place-items-center rounded text-ds-faint hover:bg-ds-hover hover:text-accent group-hover:grid"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        addKeyframeAtPlayhead(track)
-                      }}
-                      title={t('canvasMotionAddKeyframe', 'Add keyframe at playhead')}
-                      aria-label={t('canvasMotionAddKeyframe', 'Add keyframe at playhead')}
+                      className="sticky left-0 z-[2] flex h-full min-w-0 items-center gap-1.5 border-r border-ds-border-muted bg-inherit px-3 text-left"
+                      title={`${shapeLabel(document.objects[track.targetShapeId], track.targetShapeId)} · ${track.property}`}
                     >
-                      <Plus className="h-3 w-3" />
+                      <Diamond className="h-2.5 w-2.5 shrink-0 text-accent" fill="currentColor" />
+                      <span className="min-w-0 flex-1 truncate text-[10px] text-ds-muted">
+                        {propertyLabel}
+                      </span>
                     </button>
-                  </div>
+                    <div className="relative h-full min-w-[420px]">
+                      {TIMELINE_TICKS.map((ratio) => (
+                        <span
+                          key={ratio}
+                          className="pointer-events-none absolute inset-y-0 w-px bg-ds-border-muted/55"
+                          style={{ left: `${ratio * 100}%` }}
+                        />
+                      ))}
+                      <span className="absolute left-0 right-0 top-1/2 h-px bg-ds-border-muted" />
+                      <span
+                        className="pointer-events-none absolute inset-y-0 z-[1] w-px bg-accent/75"
+                        style={{ left: playheadPercent }}
+                      />
+                      {track.keyframes.map((keyframe) => {
+                        const displayedTime = drag?.trackId === track.id && drag.keyframeId === keyframe.id
+                          ? trackTime(track, { ...keyframe, timeMs: drag.timeMs })
+                          : trackTime(track, keyframe)
+                        const keyframeSelected = selectedKeyframeId === keyframe.id && selected
+                        return (
+                          <button
+                            key={keyframe.id}
+                            type="button"
+                            className={`absolute top-1/2 z-[2] h-3 w-3 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-[2px] border transition ${
+                              keyframeSelected
+                                ? 'border-accent bg-accent shadow-[0_0_0_2px_rgba(101,87,255,.2)]'
+                                : 'border-ds-muted bg-white hover:border-accent dark:bg-ds-card'
+                            }`}
+                            style={{ left: `${Math.max(0, Math.min(100, displayedTime / durationMs * 100))}%` }}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              useCanvasMotionStore.getState().selectKeyframe(track.id, keyframe.id)
+                              useCanvasMotionStore.getState().setCurrentTimeMs(trackTime(track, keyframe))
+                            }}
+                            onPointerDown={(event) => beginKeyframeDrag(event, track, keyframe)}
+                            onFocus={() => useCanvasMotionStore.getState().selectKeyframe(track.id, keyframe.id)}
+                            aria-label={`${track.property} keyframe at ${Math.round(displayedTime)}ms`}
+                            title={`${Math.round(displayedTime)} ms · ${keyframe.value} · ${easingLabel(keyframe.easing)}`}
+                          />
+                        )
+                      })}
+                      <button
+                        type="button"
+                        className="absolute right-1 top-1/2 z-[2] hidden h-5 w-5 -translate-y-1/2 place-items-center rounded text-ds-faint hover:bg-ds-hover hover:text-accent group-hover:grid"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          addKeyframeAtPlayhead(track)
+                        }}
+                        title={t('canvasMotionAddKeyframe', 'Add keyframe at playhead')}
+                        aria-label={t('canvasMotionAddKeyframe', 'Add keyframe at playhead')}
+                      >
+                        <Plus className="h-3 w-3" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               )
             }) : svgPreview ? null : (
-              <div className="grid h-[118px] place-items-center px-6 text-center text-[11px] leading-5 text-ds-faint">
-                {selectedShapeIds.length > 0
-                  ? t('canvasMotionEmptySelected', 'Apply a preset or add a property to start animating the selected layer.')
-                  : t('canvasMotionEmpty', 'Select a layer or frame, then add a Motion preset.')}
+              <div className="grid h-[88px] grid-cols-[184px_minmax(420px,1fr)]">
+                <div className="sticky left-0 border-r border-ds-border-muted bg-white/80 dark:bg-ds-card/80" />
+                <div className="grid place-items-center px-6 text-center text-[10.5px] leading-5 text-ds-faint">
+                  {selectedShapeIds.length > 0
+                    ? t('canvasMotionEmptySelected', 'Apply a preset or add a property to start animating the selected layer.')
+                    : t('canvasMotionEmpty', 'Select a layer or frame, then add a Motion preset.')}
+                </div>
               </div>
             )}
           </div>

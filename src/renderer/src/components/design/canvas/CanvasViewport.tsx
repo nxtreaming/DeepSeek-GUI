@@ -513,7 +513,12 @@ export function CanvasViewport({
         ref={rootRef}
         tabIndex={surface === 'code' ? -1 : undefined}
         className="ds-no-drag relative h-full w-full overflow-hidden bg-[#f8fafc] text-[#1e1e1e] outline-none dark:bg-[#111318] dark:text-[#e9ecef]"
-        style={{ '--canvas-bottom-ui-inset': designMotionOpen ? '262px' : '16px' } as React.CSSProperties}
+        style={{
+          '--canvas-motion-dock-height': '264px',
+          '--canvas-bottom-ui-inset': designMotionOpen
+            ? 'calc(var(--canvas-motion-dock-height) + 16px)'
+            : '16px'
+        } as React.CSSProperties}
       >
         <div className="pointer-events-none absolute left-3 top-3 z-40 flex min-w-0 items-start">
           <div
@@ -569,7 +574,11 @@ export function CanvasViewport({
         <div
           ref={containerRef}
           className="absolute inset-0 overflow-hidden bg-[#f8fafc] dark:bg-[#111318]"
-          style={{ bottom: designMotionOpen ? 258 : 0 }}
+          style={{
+            bottom: designMotionOpen
+              ? 'calc(var(--canvas-motion-dock-height) + 12px)'
+              : 0
+          }}
         >
           {surface === 'design' ? <DesignSystemInspector workspaceRoot={workspaceRoot} /> : null}
           <AlignmentToolbar />

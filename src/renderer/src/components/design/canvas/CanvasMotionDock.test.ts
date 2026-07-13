@@ -271,6 +271,13 @@ describe('CanvasMotionDock', () => {
     expect(json).toContain('24 animations')
     expect(json).toContain('Looping')
     expect(json).toMatch(/(?:5000ms|5\.0s) representative cycle/)
+    expect(json).toContain('Preview only')
+    expect(renderer.root.findByProps({
+      'aria-label': 'Preview-only content animation. Container Motion presets move, scale, rotate, or fade the whole SVG.'
+    })).toBeDefined()
+    expect(renderer.root.findByProps({ 'data-motion-transport': 'container' })).toBeDefined()
+    expect(renderer.root.findByProps({ 'data-motion-track-grid': true })).toBeDefined()
+    expect(renderer.root.findByProps({ 'data-motion-track-kind': 'svg-content' })).toBeDefined()
     expect(json).not.toContain('Apply a preset or add a property to start animating the selected layer.')
     expect(json).not.toContain('Select a layer or frame, then add a Motion preset.')
     expect(renderer.root.findByProps({ 'aria-label': 'Play' }).props.disabled).toBe(true)

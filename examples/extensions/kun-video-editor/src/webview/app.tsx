@@ -67,6 +67,46 @@ export type VideoEditorWorkbenchProps = {
 
 const SIDEBAR_BREAKPOINT_QUERY = '(max-width: 860px)'
 
+type WorkbenchIconName =
+  | 'script'
+  | 'clips'
+  | 'timeline'
+  | 'properties'
+  | 'output'
+  | 'project'
+  | 'playhead'
+  | 'proof'
+  | 'back'
+  | 'play'
+  | 'pause'
+  | 'forward'
+  | 'split'
+  | 'delete'
+
+function WorkbenchIcon({ name }: { name: WorkbenchIconName }): React.JSX.Element {
+  const paths: Readonly<Record<WorkbenchIconName, ReactNode>> = {
+    script: <><path d="M5 4.5h10v15H5z" /><path d="M8 8h4M8 11h5M8 14h3" /></>,
+    clips: <><rect x="3.5" y="5" width="17" height="14" rx="2" /><path d="m8 13 2.5-2.5L15 15l2-2 3.5 3.5M8 9h.01" /></>,
+    timeline: <><path d="M4 7h16M4 12h16M4 17h16" /><path d="M8 4v6M15 9v6M11 14v6" /></>,
+    properties: <><path d="M4 7h9M17 7h3M4 17h3M11 17h9M4 12h3M11 12h9" /><circle cx="15" cy="7" r="2" /><circle cx="9" cy="12" r="2" /><circle cx="9" cy="17" r="2" /></>,
+    output: <><path d="M12 4v11M8 8l4-4 4 4" /><path d="M5 13v6h14v-6" /></>,
+    project: <><path d="M4 6h6l2 2h8v10H4z" /></>,
+    playhead: <><circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" /></>,
+    proof: <><path d="m5 12 4 4L19 6" /></>,
+    back: <><path d="m11 7-5 5 5 5M18 7v10" /></>,
+    play: <><path d="m9 7 8 5-8 5z" /></>,
+    pause: <><path d="M9 7v10M15 7v10" /></>,
+    forward: <><path d="m13 7 5 5-5 5M6 7v10" /></>,
+    split: <><circle cx="7" cy="7" r="2" /><circle cx="7" cy="17" r="2" /><path d="m9 8 9 8M9 16l9-8" /></>,
+    delete: <><path d="M5 7h14M9 7V5h6v2M8 10v7M12 10v7M16 10v7M7 7l1 13h8l1-13" /></>
+  }
+  return (
+    <svg className="workbench-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      {paths[name]}
+    </svg>
+  )
+}
+
 function multicamPanelMessages(messages: Messages): MulticamPanelMessages {
   return {
     title: messages.multicamTitle,
@@ -124,7 +164,9 @@ export function VideoEditorWorkbench({ controller }: VideoEditorWorkbenchProps):
   const alertRef = useRef<HTMLDivElement>(null)
   const compactSidebar = useCompactSidebar()
   const activeSection = state.activeWorkspace
-  const [previewExpanded, setPreviewExpanded] = useState(() => !compactSidebar)
+  const [previewExpanded, setPreviewExpanded] = useState(() =>
+    !compactSidebar || (typeof window !== 'undefined' && window.innerWidth >= 540)
+  )
   const project = state.project
   const initializationFailed = !project && (
     state.connection === 'offline' ||
@@ -544,12 +586,12 @@ function WorkbenchSectionTabs(props: {
   onChange(section: EditorWorkspace): void
   messages: Messages
 }): React.JSX.Element {
-  const sections: ReadonlyArray<{ id: EditorWorkspace; label: string }> = [
-    { id: 'script', label: props.messages.workspaceScript },
-    { id: 'clips', label: props.messages.workspaceClips },
-    { id: 'timeline', label: props.messages.workspaceTimeline },
-    { id: 'properties', label: props.messages.workspaceProperties },
-    { id: 'output', label: props.messages.workspaceOutput }
+  const sections: ReadonlyArray<{ id: EditorWorkspace; label: string; icon: WorkbenchIconName }> = [
+    { id: 'script', label: props.messages.workspaceScript, icon: 'script' },
+    { id: 'clips', label: props.messages.workspaceClips, icon: 'clips' },
+    { id: 'timeline', label: props.messages.workspaceTimeline, icon: 'timeline' },
+    { id: 'properties', label: props.messages.workspaceProperties, icon: 'properties' },
+    { id: 'output', label: props.messages.workspaceOutput, icon: 'output' }
   ]
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
@@ -580,7 +622,8 @@ function WorkbenchSectionTabs(props: {
           tabIndex={props.activeSection === section.id ? 0 : -1}
           onClick={() => props.onChange(section.id)}
         >
-          {section.label}
+          <WorkbenchIcon name={section.icon} />
+          <span>{section.label}</span>
         </button>
       ))}
     </nav>
@@ -618,14 +661,17 @@ function ProjectStatusStrip(props: {
     data-proof-state={proofState}
   >
     <span className="project-status-item project-status-project" data-status-kind="project">
+      <WorkbenchIcon name="project" />
       <strong>{messages.projectStatusProject}</strong>
       <span title={project.name}>{project.name} · r{project.currentRevision}</span>
     </span>
     <span className="project-status-item" data-status-kind="playhead">
+      <WorkbenchIcon name="playhead" />
       <strong>{messages.projectStatusPlayhead}</strong>
       <span>{state.playheadFrame}f · {formatTime(frameToSeconds(project, state.playheadFrame))}</span>
     </span>
     <span className="project-status-item" data-status-kind="proof">
+      <WorkbenchIcon name="proof" />
       <strong>{messages.projectStatusProof}</strong>
       <span>{proofLabel}</span>
     </span>
@@ -689,7 +735,7 @@ function ProjectBar({ controller, messages }: { controller: EditorController; me
   const previousDefaultName = useRef(messages.untitledInterview)
   const [preset, setPreset] = useState<'16:9' | '9:16' | '1:1'>('16:9')
   const [fpsPreset, setFpsPreset] = useState('30/1')
-  const [creating, setCreating] = useState(!state.project)
+  const [creating, setCreating] = useState(false)
   useEffect(() => {
     setName((current) => current === previousDefaultName.current ? messages.untitledInterview : current)
     previousDefaultName.current = messages.untitledInterview
@@ -747,13 +793,17 @@ function ProjectBar({ controller, messages }: { controller: EditorController; me
         </form>
       </nav>
       <div className="project-actions">
-        <span className={`connection connection-${state.connection}`}>{connectionLabel(messages, state.connection)}</span>
-        {state.project && <span className="revision-badge">r{state.project.currentRevision}</span>}
-        <MediaCapabilityStatus state={state} messages={messages} />
-        <button type="button" onClick={() => void controller.importMedia()} disabled={!state.project || state.busy || !canImportMedia(state)}>{messages.importMedia}</button>
-        <button type="button" onClick={() => void controller.undo()} disabled={!(state.project?.canUndo ?? Boolean(state.project && state.project.currentRevision > 0)) || state.busy}>{messages.undo}</button>
-        <button type="button" onClick={() => void controller.redo()} disabled={!(state.project?.canRedo ?? Boolean(state.project && state.project.currentRevision > 0)) || state.busy}>{messages.redo}</button>
-        <button type="button" className="quiet-button" onClick={() => void controller.refreshAll()} disabled={state.busy}>{messages.refresh}</button>
+        <div className="project-health" aria-label={messages.compactProjectStatus}>
+          <span className={`connection connection-${state.connection}`}>{connectionLabel(messages, state.connection)}</span>
+          {state.project && <span className="revision-badge">r{state.project.currentRevision}</span>}
+          <MediaCapabilityStatus state={state} messages={messages} />
+        </div>
+        <div className="project-action-buttons">
+          <button type="button" className="primary-action" onClick={() => void controller.importMedia()} disabled={!state.project || state.busy || !canImportMedia(state)}>{messages.importMedia}</button>
+          <button type="button" className="icon-action" title={messages.undo} aria-label={messages.undo} onClick={() => void controller.undo()} disabled={!(state.project?.canUndo ?? Boolean(state.project && state.project.currentRevision > 0)) || state.busy}>↶</button>
+          <button type="button" className="icon-action" title={messages.redo} aria-label={messages.redo} onClick={() => void controller.redo()} disabled={!(state.project?.canRedo ?? Boolean(state.project && state.project.currentRevision > 0)) || state.busy}>↷</button>
+          <button type="button" className="icon-action quiet-button" title={messages.refresh} aria-label={messages.refresh} onClick={() => void controller.refreshAll()} disabled={state.busy}>↻</button>
+        </div>
       </div>
     </header>
   )
@@ -783,7 +833,11 @@ function EmptyProject({ controller, messages }: { controller: EditorController; 
           ))}
         </div>
       </div>
-      <div className="empty-illustration" aria-hidden="true"><span>01:24</span><i /><i /><i /></div>
+      <div className="empty-illustration" aria-hidden="true">
+        <div className="empty-preview-stage"><span className="empty-aspect">16:9</span><b>▶</b></div>
+        <div className="empty-preview-transport"><span>00:18</span><i /></div>
+        <div className="empty-preview-timeline"><i /><i /><i /></div>
+      </div>
     </main>
   )
 }
@@ -1237,11 +1291,11 @@ function CaptionOverlay({ caption }: { caption: CaptionProjection }): React.JSX.
 function PlayerControls({ controller, project, messages }: { controller: EditorController; project: ProjectProjection; messages: Messages }): React.JSX.Element {
   return (
     <div className="transport" aria-label={messages.playerControls}>
-      <button type="button" onClick={() => controller.seek(Math.max(0, controller.state.playheadFrame - Math.round(project.fps.numerator / project.fps.denominator * 5)))}>-5s</button>
-      <button type="button" className="primary-transport" aria-pressed={controller.state.playing} onClick={controller.togglePlaying}>{controller.state.playing ? messages.pause : messages.play}</button>
-      <button type="button" onClick={() => controller.seek(Math.min(project.durationFrames, controller.state.playheadFrame + Math.round(project.fps.numerator / project.fps.denominator * 5)))}>+5s</button>
+      <button type="button" className="transport-icon" aria-label="-5s" title="-5s" onClick={() => controller.seek(Math.max(0, controller.state.playheadFrame - Math.round(project.fps.numerator / project.fps.denominator * 5)))}><WorkbenchIcon name="back" /></button>
+      <button type="button" className="primary-transport transport-icon" aria-label={controller.state.playing ? messages.pause : messages.play} aria-pressed={controller.state.playing} onClick={controller.togglePlaying}><WorkbenchIcon name={controller.state.playing ? 'pause' : 'play'} /><span className="sr-only">{controller.state.playing ? messages.pause : messages.play}</span></button>
+      <button type="button" className="transport-icon" aria-label="+5s" title="+5s" onClick={() => controller.seek(Math.min(project.durationFrames, controller.state.playheadFrame + Math.round(project.fps.numerator / project.fps.denominator * 5)))}><WorkbenchIcon name="forward" /></button>
       <label className="scrubber"><span>{messages.timelinePosition}</span><input type="range" min={0} max={Math.max(1, project.durationFrames)} value={controller.state.playheadFrame} onChange={(event) => controller.seek(Number(event.target.value))} /></label>
-      <output>{controller.state.playheadFrame}f</output>
+      <output>{formatTime(frameToSeconds(project, controller.state.playheadFrame))} / {formatTime(frameToSeconds(project, project.durationFrames))}</output>
     </div>
   )
 }
@@ -1270,15 +1324,27 @@ function EditToolbar({ controller, project, messages }: { controller: EditorCont
   }, [item])
   return (
     <div className="edit-toolbar" aria-label={messages.manualTimelineEditing}>
-      <button type="button" onClick={() => item && void splitAtPlayhead(controller, project, item, messages)} disabled={!item}>{messages.splitAtPlayhead}</button>
-      <button type="button" className="danger-button" onClick={() => item && window.confirm(messages.deleteItemConfirm) && void deleteTimelineItem(controller, project, item, messages)} disabled={!item}>{messages.deleteItem}</button>
-      <label><span>{messages.trimIn} ({messages.frames})</span><input type="number" min={item?.timelineStartFrame ?? 0} max={trimEnd - 1} value={trimStart} onChange={(event) => setTrimStart(Number(event.target.value))} disabled={!item} /></label>
-      <label><span>{messages.trimOut} ({messages.frames})</span><input type="number" min={trimStart + 1} max={item ? item.timelineStartFrame + item.durationFrames : 1} value={trimEnd} onChange={(event) => setTrimEnd(Number(event.target.value))} disabled={!item} /></label>
-      <button type="button" disabled={!item} onClick={() => item && applyToolbarTrim(controller, project, item, trimStart, trimEnd, messages)}>{messages.applyTrim}</button>
-      <label><span>{messages.track}</span><select value={trackId} onChange={(event) => setTrackId(event.target.value)} disabled={!item}>{compatibleTracks(project.tracks, item).map((track) => <option key={track.id} value={track.id}>{trackDisplayName(messages, track)}</option>)}</select></label>
-      <button type="button" disabled={!item || !trackId} onClick={() => item && applyToolbarMove(controller, project, item, trackId, messages)}>{messages.moveTrack}</button>
-      <label><span>{messages.placeBefore}</span><select value={beforeItemId} onChange={(event) => setBeforeItemId(event.target.value)} disabled={!item}><option value="">{messages.endOfTrack}</option>{project.items.filter((candidate) => candidate.trackId === item?.trackId && candidate.id !== item?.id).map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.id}</option>)}</select></label>
-      <button type="button" disabled={!item} onClick={() => item && void controller.applyOperations([{ type: 'reorder-item', itemId: item.id, ...(beforeItemId ? { beforeItemId } : {}) }], formatMessage(messages.reorderSummary, { id: item.id }))}>{messages.reorder}</button>
+      <div className="selection-quick-summary" data-empty={item ? 'false' : 'true'}>
+        <span className="selection-quick-icon"><WorkbenchIcon name="clips" /></span>
+        <span><strong>{item?.id ?? messages.timeline}</strong><small>{item ? `${item.durationFrames}f · ${trackDisplayName(messages, project.tracks.find(({ id }) => id === item.trackId) ?? project.tracks[0]!)}` : messages.noSelection}</small></span>
+      </div>
+      <div className="selection-quick-actions">
+        <button type="button" aria-label={messages.splitAtPlayhead} onClick={() => item && void splitAtPlayhead(controller, project, item, messages)} disabled={!item}><WorkbenchIcon name="split" /><span>{messages.splitAtPlayhead}</span></button>
+        <button type="button" className="danger-button" aria-label={messages.deleteItem} onClick={() => item && window.confirm(messages.deleteItemConfirm) && void deleteTimelineItem(controller, project, item, messages)} disabled={!item}><WorkbenchIcon name="delete" /><span>{messages.deleteItem}</span></button>
+        <button type="button" aria-label={messages.workspaceProperties} onClick={() => controller.setActiveWorkspace('properties')} disabled={!item}><WorkbenchIcon name="properties" /><span>{messages.workspaceProperties}</span></button>
+      </div>
+      <details className="precision-edit">
+        <summary>{messages.manualTimelineEditing}</summary>
+        <div className="precision-edit-grid">
+          <label><span>{messages.trimIn} ({messages.frames})</span><input type="number" min={item?.timelineStartFrame ?? 0} max={trimEnd - 1} value={trimStart} onChange={(event) => setTrimStart(Number(event.target.value))} disabled={!item} /></label>
+          <label><span>{messages.trimOut} ({messages.frames})</span><input type="number" min={trimStart + 1} max={item ? item.timelineStartFrame + item.durationFrames : 1} value={trimEnd} onChange={(event) => setTrimEnd(Number(event.target.value))} disabled={!item} /></label>
+          <button type="button" disabled={!item} onClick={() => item && applyToolbarTrim(controller, project, item, trimStart, trimEnd, messages)}>{messages.applyTrim}</button>
+          <label><span>{messages.track}</span><select value={trackId} onChange={(event) => setTrackId(event.target.value)} disabled={!item}>{compatibleTracks(project.tracks, item).map((track) => <option key={track.id} value={track.id}>{trackDisplayName(messages, track)}</option>)}</select></label>
+          <button type="button" disabled={!item || !trackId} onClick={() => item && applyToolbarMove(controller, project, item, trackId, messages)}>{messages.moveTrack}</button>
+          <label><span>{messages.placeBefore}</span><select value={beforeItemId} onChange={(event) => setBeforeItemId(event.target.value)} disabled={!item}><option value="">{messages.endOfTrack}</option>{project.items.filter((candidate) => candidate.trackId === item?.trackId && candidate.id !== item?.id).map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.id}</option>)}</select></label>
+          <button type="button" disabled={!item} onClick={() => item && void controller.applyOperations([{ type: 'reorder-item', itemId: item.id, ...(beforeItemId ? { beforeItemId } : {}) }], formatMessage(messages.reorderSummary, { id: item.id }))}>{messages.reorder}</button>
+        </div>
+      </details>
     </div>
   )
 }

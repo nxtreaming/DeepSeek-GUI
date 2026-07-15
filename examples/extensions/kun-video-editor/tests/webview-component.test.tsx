@@ -67,6 +67,10 @@ describe('video editor docked workbench', () => {
     expect(panes.filter((tag) => !hasAttribute(tag, 'hidden'))).toHaveLength(1)
     expect(tags.some((tag) => hasClass(tag, 'preview-drawer'))).toBe(true)
     expect(tags.find((tag) => hasClass(tag, 'preview-drawer')) && attribute(tags.find((tag) => hasClass(tag, 'preview-drawer'))!, 'role')).toBeUndefined()
+    expect(tags.some((tag) => hasClass(tag, 'project-health'))).toBe(true)
+    expect(tags.some((tag) => hasClass(tag, 'project-action-buttons'))).toBe(true)
+    expect((html.match(/class="workbench-icon"/gu) ?? []).length).toBeGreaterThanOrEqual(5)
+    expect(html).toContain('class="selection-quick-summary"')
     expect(tabs.map((tag) => textForOpeningTag(html, tag))).toEqual(expectedLabels)
 
     for (const section of sections) {
@@ -841,7 +845,7 @@ describe('video editor docked workbench', () => {
       await act(async () => importButton!.props.onClick())
       expect(importMedia).toHaveBeenCalledOnce()
 
-      const playButton = renderer!.root.findAllByType('button').find(({ props }) => props.children === 'Play')
+      const playButton = renderer!.root.findAllByType('button').find(({ props }) => props['aria-label'] === 'Play')
       expect(playButton?.props).toMatchObject({ type: 'button', 'aria-pressed': false })
       await act(async () => playButton!.props.onClick())
       expect(togglePlaying).toHaveBeenCalledOnce()
@@ -881,7 +885,7 @@ describe('video editor docked workbench', () => {
       )
 
       applyOperations.mockClear()
-      const splitButton = renderer!.root.findAllByType('button').find(({ props }) => props.children === 'Split at playhead')
+      const splitButton = renderer!.root.findAllByType('button').find(({ props }) => props['aria-label'] === 'Split at playhead')
       expect(splitButton?.props).toMatchObject({ type: 'button', disabled: false })
       await act(async () => splitButton!.props.onClick())
       expect(applyOperations).toHaveBeenCalledWith(

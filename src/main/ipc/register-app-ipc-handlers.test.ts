@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -111,6 +111,30 @@ describe('registerAppIpcHandlers', () => {
     electronMock.showMessageBox.mockReset()
     electronMock.openPath.mockClear()
     electronMock.showItemInFolder.mockClear()
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('bypasses cache for development reload commands and keeps packaged reloads ordinary', async () => {
+    const reload = vi.fn()
+    const reloadIgnoringCache = vi.fn()
+    const contents = { reload, reloadIgnoringCache }
+    const mainWindow = { isDestroyed: () => false, webContents: contents }
+    registerAppIpcHandlers(registerOptions({ getMainWindow: () => mainWindow as never }))
+    const handler = handlers.get('desktop:command')
+
+    vi.stubEnv('ELECTRON_RENDERER_URL', 'http://127.0.0.1:5173')
+    await handler?.({ sender: contents }, 'reload')
+    expect(reloadIgnoringCache).toHaveBeenCalledOnce()
+    expect(reload).not.toHaveBeenCalled()
+
+    reloadIgnoringCache.mockClear()
+    vi.stubEnv('ELECTRON_RENDERER_URL', '')
+    await handler?.({ sender: contents }, 'reload')
+    expect(reload).toHaveBeenCalledOnce()
+    expect(reloadIgnoringCache).not.toHaveBeenCalled()
   })
 
   it('rejects invalid settings patches at the handler boundary', async () => {

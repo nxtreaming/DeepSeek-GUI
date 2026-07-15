@@ -143,6 +143,7 @@ import type { JsonSettingsStore } from '../settings-store'
 import { probeModelProvider } from '../provider-connection'
 import type { ClawRuntime } from '../claw-runtime'
 import type { ScheduleRuntime } from '../schedule-runtime'
+import { reloadRenderer } from '../dev-renderer-cache'
 import { verifyTelegramBotToken } from '../telegram-runtime'
 import { startCodexDeviceAuth, pollCodexDeviceAuth, startCodexBrowserAuth } from '../codex-auth'
 import type { WorkflowRuntime } from '../workflow-runtime'
@@ -447,7 +448,7 @@ function runDesktopCommand(
       contents.selectAll()
       return
     case 'reload':
-      contents.reload()
+      reloadRenderer(contents)
       return
     case 'zoomIn':
       contents.setZoomLevel(contents.getZoomLevel() + 1)

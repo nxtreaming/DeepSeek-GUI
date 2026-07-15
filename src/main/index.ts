@@ -29,6 +29,11 @@ import kunTrayPng from '../asset/img/kun_tray.png?url'
 import { createAppIcon, pickTrayIcon, prepareTrayIcon } from './app-icon'
 import { buildTrayMenuTemplate, parseTrayThreads, type TrayThreadSummary } from './tray-session-menu'
 import { configureLinuxWaylandImeSwitches } from './app-command-line'
+import {
+  clearDevelopmentRendererHttpCache,
+  configureDevelopmentRendererHttpCache,
+  reloadRenderer
+} from './dev-renderer-cache'
 import { configureAppIdentity } from './app-identity'
 import { shouldStartHidden, syncLoginItemSettings } from './desktop-behavior'
 import { resolveLogDirectory, resolveNamedPreloadPath, resolvePreloadPath } from './main-paths'
@@ -260,6 +265,7 @@ traceStartup('legacy data migration checked', {
 })
 
 configureLinuxWaylandImeSwitches()
+configureDevelopmentRendererHttpCache(app.commandLine, devServerHintUrl())
 
 if (!runningClawScheduleMcpServer && process.platform === 'win32') {
   app.setAppUserModelId(APP_USER_MODEL_ID)
@@ -1152,7 +1158,7 @@ function createWindow(options: { suppressInitialShow?: boolean } = {}): void {
         trigger,
         attempt
       })
-      window.webContents.reload()
+      reloadRenderer(window.webContents, devServerHintUrl())
     }, MAIN_WINDOW_RENDERER_RECOVERY_DELAY_MS)
     recoveryTimer.unref?.()
   }
@@ -1558,6 +1564,16 @@ if (runningClawScheduleMcpServer) {
 app.whenReady().then(async () => {
   traceStartup('app.whenReady:start')
   if (!gotSingleInstanceLock) return
+
+  try {
+    const cleared = await clearDevelopmentRendererHttpCache(
+      session.defaultSession,
+      devServerHintUrl()
+    )
+    if (cleared) traceStartup('development renderer HTTP cache cleared')
+  } catch (error) {
+    console.warn('[kun-gui] failed to clear the development renderer HTTP cache:', error)
+  }
 
   if (process.platform === 'darwin') {
     const macDockIcon = createAppIcon(kunMacLogoPng)

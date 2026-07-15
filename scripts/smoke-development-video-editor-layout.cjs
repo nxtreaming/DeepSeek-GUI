@@ -22,6 +22,9 @@ const {
   waitForPortsClosed
 } = require('./smoke-packaged-extension-desktop.cjs')
 const {
+  developmentRendererEnvironment
+} = require('./development-renderer-environment.cjs')
+const {
   EXTENSION_ID,
   EXTENSION_VERSION,
   desktopVideoEditorSettings,
@@ -113,15 +116,16 @@ async function main() {
       await writeFile(join(directory, 'kun-settings.json'), serializedSettings)
     }))
 
-    const isolatedEnvironment = createIsolatedEnvironment(process.env, {
-      home,
-      appData,
-      localAppData,
-      temporaryDirectory
-    })
+    const isolatedEnvironment = developmentRendererEnvironment(
+      createIsolatedEnvironment(process.env, {
+        home,
+        appData,
+        localAppData,
+        temporaryDirectory
+      }),
+      { rendererPort, temporaryRoot }
+    )
     isolatedEnvironment.NODE_ENV = 'development'
-    isolatedEnvironment.ELECTRON_RENDERER_URL = `http://127.0.0.1:${rendererPort}`
-    isolatedEnvironment.KUN_ELECTRON_VITE_PORT = String(rendererPort)
 
     runRepositoryKun([
       'extension', 'install',

@@ -72,6 +72,23 @@ up, the active pane owns the full remaining height, and insert/history controls
 sit directly below the scaled 16:9 canvas. Below 360 px the dedicated Slides tab
 can temporarily take the full width.
 
+Selecting a canvas element reveals explicit Edit (for text) and Delete actions
+in the canvas toolbar. A repeated click on text enters inline editing; Enter also
+edits a focused text layer, while Delete or Backspace removes a focused element.
+View and edit modes use the same positioned HTML text layer. Editing keeps the
+existing content, typography, color, alignment, and transparent slide background,
+then places the caret at the end instead of replacing the element with a white
+form field or selecting all text. Escape cancels the draft and Ctrl/Cmd+Enter
+commits it through the typed undo/autosave path. The Properties tab remains
+available for content, geometry, layer, and CSS edits.
+
+Image opens the operating system's file chooser directly. Selecting one PNG,
+JPEG, GIF, or WebP copies its bounded bytes into a unique workspace-relative
+asset (using the existing `assets/` directory when present) and inserts the new
+image element immediately. Cancelling the chooser leaves the deck unchanged;
+unsupported, empty, and over-6-MiB files fail without exposing an absolute path
+to the Webview or overwriting an existing workspace file.
+
 Properties also exposes a DOM/Layers tree for the current slide. Text and shape
 elements correspond to projected `div` nodes and images correspond to `img`
 nodes. Selecting a layer reveals a bounded CSS declaration editor for layout,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -28,7 +28,7 @@ try {
   const extractedRoot = join(temporary, 'extracted')
   const extracted = await extractKunxArchive(archivePath, extractedRoot)
   assert.equal(extracted.manifest.main, 'dist/host/extension.js')
-  assert.equal(extracted.manifest.version, '0.1.7')
+  assert.equal(extracted.manifest.version, '0.1.10')
   assert.deepEqual(extracted.manifest.contributes['views.rightSidebar'], [{
     id: 'studio',
     title: 'Kun PPT',
@@ -41,6 +41,25 @@ try {
   assert.deepEqual(extracted.manifest.contributes['views.fullPage'], [])
   assert.deepEqual(extracted.manifest.contributes.agentProfiles, [])
   assert.ok(!extracted.manifest.permissions.includes('agent.run'))
+  const webviewHtml = await readFile(join(extractedRoot, 'dist', 'webview', 'index.html'), 'utf8')
+  assert.match(webviewHtml, /id="image-file-picker"/u)
+  assert.match(webviewHtml, /type="file"/u)
+  assert.doesNotMatch(webviewHtml, /id="image-dialog"/u)
+  assert.doesNotMatch(webviewHtml, /inline-text-editor/u)
+  const webviewAssetsRoot = join(extractedRoot, 'dist', 'webview', 'assets')
+  const webviewAssets = await readdir(webviewAssetsRoot)
+  const webviewScript = await readFile(
+    join(webviewAssetsRoot, webviewAssets.find((name) => name.endsWith('.js'))),
+    'utf8'
+  )
+  const webviewStyles = await readFile(
+    join(webviewAssetsRoot, webviewAssets.find((name) => name.endsWith('.css'))),
+    'utf8'
+  )
+  assert.match(webviewScript, /canvas-text-content/u)
+  assert.match(webviewScript, /plaintext-only/u)
+  assert.match(webviewStyles, /\.canvas-text-content/u)
+  assert.doesNotMatch(webviewStyles, /inline-text-editor/u)
   assert.match(
     await readFile(join(extractedRoot, 'assets', 'presentation-studio.svg'), 'utf8'),
     /<svg\b/u

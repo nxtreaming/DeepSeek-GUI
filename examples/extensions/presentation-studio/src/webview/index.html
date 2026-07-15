@@ -143,11 +143,6 @@
               <rect class="canvas-background" x="0" y="0" width="1600" height="900" fill="#ffffff"></rect>
               <g id="canvas-elements"></g>
               <g id="canvas-selection" aria-hidden="true"></g>
-              <foreignObject id="inline-editor-host" x="0" y="0" width="1" height="1" hidden>
-                <div xmlns="http://www.w3.org/1999/xhtml" class="inline-editor-shell">
-                  <textarea id="inline-text-editor" aria-label="Edit text" maxlength="12000"></textarea>
-                </div>
-              </foreignObject>
             </svg>
           </div>
 
@@ -161,6 +156,21 @@
               </button>
               <button id="open-image" type="button" class="button button-compact tool-button" aria-label="Add image" title="Add image" disabled>
                 <span class="tool-icon" aria-hidden="true">▧</span><span class="tool-label">Image</span>
+              </button>
+              <input
+                id="image-file-picker"
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp,.png,.jpg,.jpeg,.gif,.webp"
+                aria-label="Choose an image to add"
+                hidden
+              />
+            </div>
+            <div id="selection-actions" class="toolbar-group selection-actions" role="group" aria-label="Selected element actions" hidden>
+              <button id="edit-selected-text" type="button" class="button button-compact tool-button" aria-label="Edit selected text" title="Edit selected text" hidden>
+                <span class="tool-icon" aria-hidden="true">✎</span><span class="tool-label">Edit</span>
+              </button>
+              <button id="delete-selected-element" type="button" class="button button-compact button-danger tool-button" aria-label="Delete selected element" title="Delete selected element">
+                <span class="tool-icon" aria-hidden="true">⌫</span><span class="tool-label">Delete</span>
               </button>
             </div>
             <span class="toolbar-spacer"></span>
@@ -192,28 +202,6 @@
           </div>
         </aside>
       </main>
-
-      <dialog id="image-dialog" class="modal" aria-labelledby="image-dialog-title">
-        <form id="image-form" class="modal-card">
-          <header>
-            <div>
-              <span class="eyebrow">Workspace asset</span>
-              <h2 id="image-dialog-title">Insert image</h2>
-            </div>
-            <button type="button" class="icon-button" data-close-dialog="image-dialog" aria-label="Close">×</button>
-          </header>
-          <label class="field" for="image-path">
-            <span>Relative image path</span>
-            <input id="image-path" type="text" maxlength="260" placeholder="assets/hero.png" spellcheck="false" />
-            <small>PNG, JPEG, GIF, or WebP. Read through the workspace broker.</small>
-          </label>
-          <p id="image-dialog-error" class="field-error" role="alert"></p>
-          <footer>
-            <button type="button" class="button" data-close-dialog="image-dialog">Cancel</button>
-            <button type="submit" class="button button-primary">Insert</button>
-          </footer>
-        </form>
-      </dialog>
 
       <dialog id="export-dialog" class="modal" aria-labelledby="export-dialog-title">
         <form id="export-form" class="modal-card">

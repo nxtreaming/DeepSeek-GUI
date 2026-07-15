@@ -56,6 +56,18 @@ The extension SHALL contribute the editor only as a responsive right-sidebar Vie
 - **WHEN** the right sidebar is resized between 420 and 640 CSS pixels while Canvas or Properties is active
 - **THEN** the active pane stretches through the remaining sidebar height, the numbered thumbnail rail stays visible, the 16:9 canvas scales without horizontal clipping, and compact deck and editing actions remain reachable without producing empty implicit grid rows
 
+#### Scenario: Edit or delete a selected canvas element
+- **WHEN** the user selects a text element and repeats the click, presses Enter, or chooses the visible Edit action, or selects any element and chooses Delete or presses Delete or Backspace
+- **THEN** text enters a focused inline editor, deletion removes the selected element through a typed operation, and both changes remain undoable and autosaved
+
+#### Scenario: Preserve the rendered text while editing in place
+- **WHEN** the user starts editing an existing text element on the canvas
+- **THEN** the same positioned HTML text layer remains visible with its font, size, color, alignment, transparent background, and original content, and the caret is placed without clearing or selecting all text
+
+#### Scenario: Insert an image through the operating system picker
+- **WHEN** the user chooses Image, selects one supported image in the system file chooser, or cancels that chooser
+- **THEN** a selected PNG, JPEG, GIF, or WebP within the size limit is copied to a unique workspace-relative asset and inserted through the typed editor, while cancellation leaves the deck unchanged and no absolute local path is exposed to the Webview or saved presentation
+
 #### Scenario: Edit the HTML presentation as bounded DIV and CSS layers
 - **WHEN** a user selects a text, shape, or image from the DOM layer tree, changes its order, or applies supported CSS declarations for layout and appearance
 - **THEN** the editor maps those changes to the same typed element operations, keeps undo and autosave behavior, and regenerates the standalone HTML projection with matching DIV or image styles

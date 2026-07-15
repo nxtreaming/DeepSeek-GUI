@@ -36,6 +36,9 @@
 - [x] 5.6 Preserve cached workspace authorization across immutable same/subset-permission updates, require review for permission additions, and make repeated identical permission application idempotent.
 - [x] 5.7 Add a DOM layer tree and bounded CSS declaration editor that maps human HTML-style edits to typed operations without allowing arbitrary HTML, script, URL, selector, or CSS injection.
 - [x] 5.8 Generate a sidebar-first UI concept, remove the conflicting desktop breakpoint tracks, compact deck actions, and verify the slide rail, canvas, toolbar, and properties pane at 420-640 px widths.
+- [x] 5.9 Make selected-element Edit/Delete actions explicit, preserve keyboard focus after pointer selection, repair repeated-click inline text editing, and verify typed deletion plus autosave/undo behavior.
+- [x] 5.10 Replace manual image-path entry with the operating system file chooser, bounded workspace import, collision-safe naming, and cancellation/type/size handling.
+- [x] 5.11 Keep canvas text on one styled HTML layer in view and edit modes, enter plaintext editing without a white replacement field or automatic select-all, and verify keyboard commit/cancel behavior.
 
 ## 6. Presentation Artifact Handoff
 

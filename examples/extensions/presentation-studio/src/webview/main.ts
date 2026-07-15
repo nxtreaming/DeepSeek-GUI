@@ -89,7 +89,10 @@ type PersistedViewState = {
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
 const SAVE_DEBOUNCE_MS = 450
+const INLINE_EDIT_DOUBLE_CLICK_MS = 500
+const MAX_INLINE_TEXT_LENGTH = 12_000
 const MAX_IMAGE_BASE64_CHARS = 8 * 1024 * 1024
+const MAX_IMPORTED_IMAGE_BYTES = Math.floor(MAX_IMAGE_BASE64_CHARS / 4) * 3
 const client = new ExtensionHostClient(window.kunExtension)
 
 function required<T extends Element>(selector: string): T {
@@ -123,22 +126,20 @@ const ui = {
   addText: required<HTMLButtonElement>('#add-text'),
   addShape: required<HTMLButtonElement>('#add-shape'),
   openImage: required<HTMLButtonElement>('#open-image'),
+  imageFilePicker: required<HTMLInputElement>('#image-file-picker'),
+  selectionActions: required<HTMLElement>('#selection-actions'),
+  editSelectedText: required<HTMLButtonElement>('#edit-selected-text'),
+  deleteSelectedElement: required<HTMLButtonElement>('#delete-selected-element'),
   openPreview: required<HTMLButtonElement>('#open-preview'),
   canvasEmpty: required<HTMLElement>('#canvas-empty'),
   canvas: required<SVGSVGElement>('#slide-canvas'),
   canvasBackground: required<SVGRectElement>('#slide-canvas > .canvas-background'),
   canvasElements: required<SVGGElement>('#canvas-elements'),
   canvasSelection: required<SVGGElement>('#canvas-selection'),
-  inlineHost: required<SVGForeignObjectElement>('#inline-editor-host'),
-  inlineText: required<HTMLTextAreaElement>('#inline-text-editor'),
   canvasCaption: required<HTMLElement>('#canvas-caption'),
   selectionCaption: required<HTMLElement>('#selection-caption'),
   inspectorTitle: required<HTMLElement>('#inspector-title'),
   inspectorBody: required<HTMLElement>('#inspector-body'),
-  imageDialog: required<HTMLDialogElement>('#image-dialog'),
-  imageForm: required<HTMLFormElement>('#image-form'),
-  imagePath: required<HTMLInputElement>('#image-path'),
-  imageError: required<HTMLElement>('#image-dialog-error'),
   exportDialog: required<HTMLDialogElement>('#export-dialog'),
   exportForm: required<HTMLFormElement>('#export-form'),
   exportPath: required<HTMLInputElement>('#export-path'),
@@ -164,7 +165,9 @@ let savePromise: Promise<void> | null = null
 let ownSaveTargetRevision: number | null = null
 let conflicted = false
 let pointerSession: PointerSession | null = null
+let recentPointerSelection: { elementId: string; at: number } | null = null
 let inlineEditingId: string | null = null
+let inlineDraft: string | null = null
 let previewIndex = 0
 let idCounter = 0
 let viewStateTimer = 0
@@ -287,6 +290,7 @@ function renderControls(): void {
   const loaded = project !== null
   const editable = loaded && !conflicted
   const slide = currentSlide()
+  const element = currentElement()
   ui.openExport.disabled = !loaded || conflicted
   ui.addSlide.disabled = !editable
   ui.duplicateSlide.disabled = !editable || !slide
@@ -296,6 +300,10 @@ function renderControls(): void {
   ui.addText.disabled = !editable || !slide
   ui.addShape.disabled = !editable || !slide
   ui.openImage.disabled = !editable || !slide
+  ui.selectionActions.hidden = !element
+  ui.editSelectedText.hidden = element?.type !== 'text'
+  ui.editSelectedText.disabled = !editable || element?.type !== 'text'
+  ui.deleteSelectedElement.disabled = !editable || !element
   ui.openPreview.disabled = !loaded || !slide
 }
 
@@ -314,35 +322,6 @@ function geometry(element: PresentationElement): { x: number; y: number; width: 
   }
 }
 
-function wrapText(text: string, width: number, fontSize: number, maxLines: number): string[] {
-  const normalized = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
-  const maxChars = Math.max(1, Math.floor(width / Math.max(5, fontSize * 0.56)))
-  const lines: string[] = []
-  for (const paragraph of normalized.split('\n')) {
-    if (!paragraph) {
-      lines.push('')
-      continue
-    }
-    let current = ''
-    for (const word of paragraph.split(/\s+/u)) {
-      if (!current) {
-        current = word
-      } else if (`${current} ${word}`.length <= maxChars) {
-        current = `${current} ${word}`
-      } else {
-        lines.push(current)
-        current = word
-      }
-      while (current.length > maxChars) {
-        lines.push(current.slice(0, maxChars))
-        current = current.slice(maxChars)
-      }
-    }
-    lines.push(current)
-  }
-  return lines.slice(0, Math.max(1, maxLines))
-}
-
 function setTransform(node: SVGElement, element: PresentationElement): void {
   const box = geometry(element)
   const rotation = finite(element.rotation, 0)
@@ -355,7 +334,11 @@ function setTransform(node: SVGElement, element: PresentationElement): void {
   node.setAttribute('opacity', String(clamp(finite(element.opacity, 1), 0, 1)))
 }
 
-function renderTextElement(group: SVGGElement, element: PresentationTextElement): void {
+function renderTextElement(
+  group: SVGGElement,
+  element: PresentationTextElement,
+  interactive: boolean
+): void {
   const box = geometry(element)
   const hit = svg('rect')
   hit.setAttribute('x', String(box.x))
@@ -365,37 +348,40 @@ function renderTextElement(group: SVGGElement, element: PresentationTextElement)
   hit.setAttribute('fill', 'transparent')
   group.append(hit)
 
-  const text = svg('text')
   const fontSize = clamp(finite(element.fontSize, 48), 8, 240)
-  const lineHeight = fontSize * 1.18
-  const lines = wrapText(element.text, box.width, fontSize, Math.floor(box.height / lineHeight))
-  const contentHeight = Math.max(lineHeight, lines.length * lineHeight)
-  const baseY = element.verticalAlign === 'bottom'
-    ? box.y + box.height - contentHeight + fontSize
-    : element.verticalAlign === 'middle'
-      ? box.y + (box.height - contentHeight) / 2 + fontSize
-      : box.y + fontSize
-  const textX = element.align === 'right'
-    ? box.x + box.width
-    : element.align === 'center'
-      ? box.x + box.width / 2
-      : box.x
-  text.setAttribute('x', String(textX))
-  text.setAttribute('y', String(baseY))
-  text.setAttribute('fill', element.color)
-  text.setAttribute('font-size', String(fontSize))
-  text.setAttribute('font-weight', String(element.fontWeight))
-  text.setAttribute('font-family', fontFamily(element.fontFamily ?? project?.theme.fontFamily ?? 'sans'))
-  text.setAttribute('text-anchor', element.align === 'right' ? 'end' : element.align === 'center' ? 'middle' : 'start')
-  text.setAttribute('pointer-events', 'none')
-  lines.forEach((line, index) => {
-    const span = svg('tspan')
-    span.setAttribute('x', String(textX))
-    span.setAttribute('dy', index === 0 ? '0' : String(lineHeight))
-    span.textContent = line
-    text.append(span)
-  })
-  group.append(text)
+  const editing = interactive && inlineEditingId === element.id
+  const frame = svg('foreignObject')
+  frame.classList.add('canvas-text-frame')
+  if (editing) frame.classList.add('is-editing')
+  frame.setAttribute('x', String(box.x))
+  frame.setAttribute('y', String(box.y))
+  frame.setAttribute('width', String(box.width))
+  frame.setAttribute('height', String(box.height))
+
+  const shell = html('div')
+  shell.className = 'canvas-text-shell'
+  shell.style.justifyContent = element.verticalAlign === 'bottom'
+    ? 'flex-end'
+    : element.verticalAlign === 'middle' ? 'center' : 'flex-start'
+
+  const content = html('div')
+  content.className = 'canvas-text-content'
+  content.style.color = element.color
+  content.style.fontSize = `${fontSize}px`
+  content.style.fontWeight = String(element.fontWeight)
+  content.style.fontFamily = fontFamily(element.fontFamily ?? project?.theme.fontFamily ?? 'sans')
+  content.style.textAlign = element.align
+  content.textContent = editing ? (inlineDraft ?? element.text) : element.text
+  if (editing) {
+    content.contentEditable = 'plaintext-only'
+    content.spellcheck = false
+    content.setAttribute('role', 'textbox')
+    content.setAttribute('aria-label', 'Edit text on slide')
+    content.setAttribute('aria-multiline', 'true')
+  }
+  shell.append(content)
+  frame.append(shell)
+  group.append(frame)
 }
 
 function renderShapeElement(group: SVGGElement, element: PresentationShapeElement): void {
@@ -443,6 +429,90 @@ function imageMime(path: string): string | null {
   if (lower.endsWith('.gif')) return 'image/gif'
   if (lower.endsWith('.webp')) return 'image/webp'
   return null
+}
+
+function imageExtension(path: string): 'png' | 'jpg' | 'jpeg' | 'gif' | 'webp' | null {
+  const match = path.toLowerCase().match(/\.([a-z0-9]+)$/u)
+  const extension = match?.[1]
+  return extension === 'png' || extension === 'jpg' || extension === 'jpeg'
+    || extension === 'gif' || extension === 'webp'
+    ? extension
+    : null
+}
+
+function safeAssetStem(value: string, fallback: string): string {
+  const normalized = value
+    .normalize('NFKD')
+    .replace(/\.[^.]+$/u, '')
+    .replace(/[^A-Za-z0-9_-]+/gu, '-')
+    .replace(/^-+|-+$/gu, '')
+    .slice(0, 48)
+  return normalized || fallback
+}
+
+async function importedImagePath(file: File): Promise<string> {
+  const extension = imageExtension(file.name)
+  if (!extension || imageMime(file.name) === null) {
+    throw new Error('Choose a PNG, JPEG, GIF, or WebP image.')
+  }
+  const declaredMime = file.type.trim().toLowerCase()
+  if (declaredMime && !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(declaredMime)) {
+    throw new Error('Choose a PNG, JPEG, GIF, or WebP image.')
+  }
+  let directory = ''
+  try {
+    const assets = await client.workspace.stat('assets')
+    if (assets.type === 'directory') directory = 'assets/'
+  } catch {
+    // Extension API v1 cannot create directories. A unique root-level asset
+    // remains workspace-confined when the conventional assets directory is absent.
+  }
+  const deck = safeAssetStem(activePath.replace(/\.kun-ppt\.html$/u, ''), 'presentation')
+  const source = safeAssetStem(file.name, 'image')
+  const nonce = globalThis.crypto?.randomUUID?.().replaceAll('-', '').slice(0, 12)
+    ?? Math.random().toString(36).slice(2, 14)
+  return assertImagePath(
+    `${directory}kun-ppt-${deck}-${source}-${Date.now().toString(36)}-${nonce}.${extension}`
+  )
+}
+
+function readImportedImage(file: File): Promise<string> {
+  if (file.size <= 0) return Promise.reject(new Error('The selected image is empty.'))
+  if (file.size > MAX_IMPORTED_IMAGE_BYTES) {
+    return Promise.reject(new Error('The selected image is too large. Choose an image smaller than 6 MiB.'))
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.addEventListener(
+      'error',
+      () => reject(new Error('Kun could not read the selected image.')),
+      { once: true }
+    )
+    reader.addEventListener('load', () => {
+      const value = reader.result
+      if (typeof value !== 'string') {
+        reject(new Error('Kun could not read the selected image.'))
+        return
+      }
+      const separator = value.indexOf(',')
+      const content = separator >= 0 ? value.slice(separator + 1) : ''
+      if (!value.slice(0, separator).endsWith(';base64') || !content
+        || content.length > MAX_IMAGE_BASE64_CHARS) {
+        reject(new Error('The selected image is too large or has an unsupported encoding.'))
+        return
+      }
+      resolve(content)
+    }, { once: true })
+    reader.readAsDataURL(file)
+  })
+}
+
+async function importSelectedImage(file: File): Promise<void> {
+  const path = await importedImagePath(file)
+  const content = await readImportedImage(file)
+  await client.workspace.writeFile({ path, content, encoding: 'base64' })
+  await resolveImage(path)
+  insertElement(createImageElement(makeId('image'), path, { alt: file.name }), 'add image')
 }
 
 function assertImagePath(path: string): string {
@@ -545,7 +615,7 @@ function renderElement(element: PresentationElement, interactive: boolean): SVGG
     group.setAttribute('aria-label', `${element.type} element ${element.id}`)
   }
   setTransform(group, element)
-  if (element.type === 'text') renderTextElement(group, element)
+  if (element.type === 'text') renderTextElement(group, element, interactive)
   else if (element.type === 'shape') renderShapeElement(group, element)
   else renderImageElement(group, element)
   return group
@@ -586,20 +656,10 @@ function renderSelection(element: PresentationElement | null): void {
   }
 }
 
-function configureInlineEditor(element: PresentationTextElement | null): void {
-  if (!element || inlineEditingId !== element.id) {
-    ui.inlineHost.setAttribute('hidden', '')
-    return
-  }
-  const box = geometry(element)
-  ui.inlineHost.setAttribute('x', String(box.x))
-  ui.inlineHost.setAttribute('y', String(box.y))
-  ui.inlineHost.setAttribute('width', String(box.width))
-  ui.inlineHost.setAttribute('height', String(box.height))
-  ui.inlineHost.removeAttribute('hidden')
-}
-
 function renderCanvas(): void {
+  const focusedElementId = document.activeElement instanceof SVGElement
+    ? document.activeElement.closest<SVGGElement>('[data-element-id]')?.dataset.elementId
+    : undefined
   const slide = currentSlide()
   if (!project || !slide) {
     ui.canvas.setAttribute('hidden', '')
@@ -616,11 +676,13 @@ function renderCanvas(): void {
   )
   const selected = currentElement()
   renderSelection(selected)
-  configureInlineEditor(selected?.type === 'text' ? selected : null)
   ui.canvasCaption.textContent = `16:9 · ${slide.title} · revision ${project.revision}`
   ui.selectionCaption.textContent = selected
     ? `${selected.type} · ${selected.id}`
     : 'Nothing selected'
+  if (focusedElementId && focusedElementId === selected?.id && inlineEditingId === null) {
+    focusCanvasElement(focusedElementId)
+  }
 }
 
 function slideTitle(slide: PresentationSlide, index: number): string {
@@ -770,6 +832,12 @@ function selectElement(elementId: string | null): void {
   renderCanvas()
   renderInspector()
   renderControls()
+}
+
+function focusCanvasElement(elementId: string): void {
+  const node = [...ui.canvasElements.querySelectorAll<SVGGElement>('[data-element-id]')]
+    .find((candidate) => candidate.dataset.elementId === elementId)
+  node?.focus({ preventScroll: true })
 }
 
 function localApply(
@@ -977,6 +1045,8 @@ function deleteSelectedElement(): void {
   const slide = currentSlide()
   const element = currentElement()
   if (!slide || !element) return
+  inlineEditingId = null
+  inlineDraft = null
   if (localApply([{ kind: 'element.delete', slideId: slide.id, elementId: element.id }], 'delete element')) {
     selectedElementId = null
     renderAll()
@@ -984,31 +1054,62 @@ function deleteSelectedElement(): void {
 }
 
 function beginInlineEdit(element: PresentationTextElement): void {
+  if (conflicted) return
+  if (inlineEditingId === element.id) {
+    inlineEditorNode()?.focus()
+    return
+  }
   inlineEditingId = element.id
+  inlineDraft = element.text
   selectedElementId = element.id
-  ui.inlineText.value = element.text
   renderCanvas()
-  window.setTimeout(() => {
-    ui.inlineText.focus()
-    ui.inlineText.select()
-  }, 0)
+  window.setTimeout(() => focusInlineEditorAtEnd(), 0)
 }
 
 function commitInlineEdit(cancel = false): void {
   if (!inlineEditingId) return
   const element = currentElement()
+  const currentText = element?.type === 'text' ? element.text : ''
+  const nextText = inlineEditorNode()?.innerText.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
+    ?? inlineDraft
+    ?? currentText
   inlineEditingId = null
-  ui.inlineHost.setAttribute('hidden', '')
-  if (!cancel && element?.type === 'text' && ui.inlineText.value !== element.text) {
-    upsertElement({ ...element, text: ui.inlineText.value }, 'edit text')
+  inlineDraft = null
+  if (!cancel && element?.type === 'text' && nextText !== element.text) {
+    upsertElement({ ...element, text: nextText }, 'edit text')
   } else {
     renderCanvas()
   }
 }
 
+function inlineEditorNode(): HTMLElement | null {
+  if (!inlineEditingId) return null
+  for (const editor of ui.canvasElements.querySelectorAll<HTMLElement>(
+    '.canvas-text-content[contenteditable]'
+  )) {
+    const item = editor.closest<SVGGElement>('[data-element-id]')
+    if (item?.dataset.elementId === inlineEditingId) return editor
+  }
+  return null
+}
+
+function focusInlineEditorAtEnd(): void {
+  const editor = inlineEditorNode()
+  if (!editor) return
+  editor.focus()
+  const selection = window.getSelection()
+  if (!selection) return
+  const range = document.createRange()
+  range.selectNodeContents(editor)
+  range.collapse(false)
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
+
 function beginPointer(event: PointerEvent): void {
   if (event.button !== 0 || conflicted) return
-  if (event.target instanceof Element && event.target.closest('.inline-editor-shell')) return
+  if (event.target instanceof Element
+    && event.target.closest('.canvas-text-content[contenteditable]')) return
   const slide = currentSlide()
   if (!slide) return
   const target = event.target instanceof Element ? event.target : null
@@ -1017,7 +1118,18 @@ function beginPointer(event: PointerEvent): void {
   const elementId = handle ? selectedElementId : elementNode?.dataset.elementId
   const element = slide.elements.find((candidate) => candidate.id === elementId)
   if (!element) {
+    recentPointerSelection = null
     if (!handle) selectElement(null)
+    return
+  }
+  const isRepeatedTextSelection = !handle
+    && element.type === 'text'
+    && recentPointerSelection?.elementId === element.id
+    && event.timeStamp - recentPointerSelection.at <= INLINE_EDIT_DOUBLE_CLICK_MS
+  recentPointerSelection = handle ? null : { elementId: element.id, at: event.timeStamp }
+  if (isRepeatedTextSelection && element.type === 'text') {
+    event.preventDefault()
+    beginInlineEdit(element)
     return
   }
   event.preventDefault()
@@ -1036,6 +1148,7 @@ function beginPointer(event: PointerEvent): void {
   ui.canvas.setPointerCapture(event.pointerId)
   renderCanvas()
   renderInspector()
+  focusCanvasElement(element.id)
 }
 
 function updatePointer(event: PointerEvent): void {
@@ -1082,6 +1195,7 @@ function endPointer(event: PointerEvent): void {
   )
   if (changed) upsertElement(session.preview, session.mode === 'move' ? 'move element' : 'resize element')
   else renderAll()
+  focusCanvasElement(session.elementId)
 }
 
 function field(
@@ -1508,22 +1622,26 @@ function bindEvents(): void {
     }), 'add shape')
   })
   ui.openImage.addEventListener('click', () => {
-    ui.imagePath.value = ''
-    ui.imageError.textContent = ''
-    ui.imageDialog.showModal()
-    ui.imagePath.focus()
+    ui.imageFilePicker.value = ''
+    ui.imageFilePicker.click()
   })
-  ui.imageForm.addEventListener('submit', (event) => {
-    event.preventDefault()
-    const path = ui.imagePath.value
-    ui.imageError.textContent = 'Loading image…'
-    void resolveImage(path)
-      .then(() => {
-        insertElement(createImageElement(makeId('image'), assertImagePath(path), { alt: path }), 'add image')
-        ui.imageDialog.close()
+  ui.imageFilePicker.addEventListener('change', () => {
+    const file = ui.imageFilePicker.files?.item(0)
+    if (!file) return
+    ui.openImage.disabled = true
+    setSaveStatus(`Importing ${file.name}…`, 'saving')
+    void importSelectedImage(file)
+      .catch((error) => setSaveStatus(errorMessage(error), 'error'))
+      .finally(() => {
+        ui.imageFilePicker.value = ''
+        renderControls()
       })
-      .catch((error) => { ui.imageError.textContent = errorMessage(error) })
   })
+  ui.editSelectedText.addEventListener('click', () => {
+    const element = currentElement()
+    if (element?.type === 'text') beginInlineEdit(element)
+  })
+  ui.deleteSelectedElement.addEventListener('click', deleteSelectedElement)
   ui.openExport.addEventListener('click', () => {
     ui.deckMenu.open = false
     ui.exportError.textContent = ''
@@ -1571,11 +1689,26 @@ function bindEvents(): void {
   ui.canvas.addEventListener('pointerup', endPointer)
   ui.canvas.addEventListener('pointercancel', endPointer)
   ui.canvas.addEventListener('dblclick', (event) => {
+    if (event.target instanceof Element
+      && event.target.closest('.canvas-text-content[contenteditable]')) return
     const target = event.target instanceof Element ? event.target.closest<SVGElement>('[data-element-id]') : null
     const element = currentSlide()?.elements.find((candidate) => candidate.id === target?.dataset.elementId)
     if (element?.type === 'text') beginInlineEdit(element)
   })
   ui.canvas.addEventListener('keydown', (event) => {
+    const inlineEditor = event.target instanceof Element
+      ? event.target.closest<HTMLElement>('.canvas-text-content[contenteditable]')
+      : null
+    if (inlineEditor) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        commitInlineEdit(true)
+      } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault()
+        commitInlineEdit()
+      }
+      return
+    }
     if (inlineEditingId) return
     const element = currentElement()
     if ((event.key === 'Delete' || event.key === 'Backspace') && element) {
@@ -1598,13 +1731,34 @@ function bindEvents(): void {
     }
     upsertElement(next, 'nudge element')
   })
-  ui.inlineText.addEventListener('blur', () => commitInlineEdit())
-  ui.inlineText.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') { event.preventDefault(); commitInlineEdit(true) }
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); commitInlineEdit() }
+  ui.canvas.addEventListener('input', (event) => {
+    const editor = event.target instanceof HTMLElement
+      ? event.target.closest<HTMLElement>('.canvas-text-content[contenteditable]')
+      : null
+    if (!editor || !inlineEditingId) return
+    const value = editor.innerText.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
+    if (value.length <= MAX_INLINE_TEXT_LENGTH) {
+      inlineDraft = value
+      return
+    }
+    inlineDraft = value.slice(0, MAX_INLINE_TEXT_LENGTH)
+    editor.textContent = inlineDraft
+    focusInlineEditorAtEnd()
+  })
+  ui.canvas.addEventListener('focusout', (event) => {
+    const editor = event.target instanceof HTMLElement
+      ? event.target.closest<HTMLElement>('.canvas-text-content[contenteditable]')
+      : null
+    if (!editor || !inlineEditingId) return
+    window.setTimeout(() => {
+      if (document.activeElement !== editor && inlineEditingId) commitInlineEdit()
+    }, 0)
   })
   document.addEventListener('keydown', (event) => {
-    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) return
+    if (event.target instanceof HTMLInputElement
+      || event.target instanceof HTMLTextAreaElement
+      || event.target instanceof HTMLSelectElement
+      || (event.target instanceof HTMLElement && event.target.isContentEditable)) return
     const modifier = event.metaKey || event.ctrlKey
     if (modifier && event.key.toLowerCase() === 'z') {
       event.preventDefault()

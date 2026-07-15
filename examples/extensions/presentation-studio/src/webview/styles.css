@@ -599,23 +599,48 @@ select:focus-visible,
   cursor: nesw-resize;
 }
 
-.inline-editor-shell {
-  width: 100%;
-  height: 100%;
-  padding: 3px;
-  background: rgba(124, 108, 255, 0.16);
+.canvas-text-frame {
+  pointer-events: none;
 }
 
-.inline-editor-shell textarea {
+.canvas-text-shell {
+  display: flex;
   width: 100%;
   height: 100%;
-  resize: none;
-  border: 2px solid #7c6cff;
-  border-radius: 2px;
-  padding: 5px;
-  color: #11131a;
-  background: #ffffff;
+  overflow: hidden;
+}
+
+.canvas-text-content {
+  box-sizing: border-box;
+  width: 100%;
+  max-height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  line-height: 1.18;
+  white-space: pre-wrap;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  background: transparent;
   outline: none;
+}
+
+.canvas-text-frame.is-editing {
+  pointer-events: auto;
+}
+
+.canvas-text-frame.is-editing .canvas-text-shell {
+  box-shadow: inset 0 0 0 3px #7c6cff;
+}
+
+.canvas-text-frame.is-editing .canvas-text-content {
+  overflow: auto;
+  caret-color: currentColor;
+  cursor: text;
+  pointer-events: auto;
+  user-select: text;
 }
 
 .image-placeholder {
@@ -1359,6 +1384,15 @@ body {
   place-items: center;
   color: var(--accent-strong);
   font-size: 13px;
+}
+
+.selection-actions {
+  padding-left: 7px;
+  border-left: 1px solid var(--border);
+}
+
+.selection-actions .button-danger .tool-icon {
+  color: var(--danger);
 }
 
 .canvas-footer {

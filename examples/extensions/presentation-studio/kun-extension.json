@@ -4,7 +4,7 @@
   "apiVersion": "1.0.0",
   "name": "presentation-studio",
   "publisher": "kun-examples",
-  "version": "0.1.7",
+  "version": "0.1.10",
   "displayName": "Kun PPT",
   "description": "A revision-aware Kun PPT display HTML workspace for people and the main Kun Agent.",
   "license": "MIT",

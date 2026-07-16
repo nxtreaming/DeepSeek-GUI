@@ -12,6 +12,7 @@ import { LazyMessageTimeline } from '../chat/LazyMessageTimeline'
 import { SubagentReturnBar } from '../chat/message-timeline-empty'
 import { WorkbenchTopActions } from '../chat/WorkbenchTopBar'
 import { IkunCameoLayer, KunCelebrationLayer } from '../chat/AnimatedWorkLogo'
+import { ActiveUiPluginStagePresentation } from '../chat/UiPluginStagePresentation'
 import { DevPreviewLaunchCard } from '../DevPreviewLaunchCard'
 import { SessionHeader } from '../SessionHeader'
 import { SidebarTitlebarToggleButton } from '../sidebar/SidebarPrimitives'
@@ -118,8 +119,11 @@ export function WorkbenchChatStage({
 }: WorkbenchChatStageProps): ReactElement {
   const { t } = useTranslation('common')
   return (
-    <section className="ds-chat-stage ds-drag flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className={`${stageInsetClass} flex min-h-0 min-w-0 flex-1 flex-col`}>
+    <section className="ds-chat-stage ds-drag relative isolate flex min-h-0 min-w-0 flex-1 flex-col">
+      <ActiveUiPluginStagePresentation />
+      <div
+        className={`${stageInsetClass} ds-ui-plugin-stage-content relative z-[3] flex min-h-0 min-w-0 flex-1 flex-col`}
+      >
         <header className="chat-topbar ds-topbar-surface relative z-10 flex w-full shrink-0 items-stretch overflow-visible">
           <div className="chat-topbar-grid grid w-full min-w-0 items-center gap-2.5 px-3 py-2 sm:px-4 md:pl-5 md:pr-2">
             <div
@@ -214,7 +218,7 @@ export function WorkbenchChatStage({
         </div>
       </div>
       {terminalOpen ? (
-        <div className="ds-no-drag flex w-full shrink-0 flex-col px-0 pb-0">
+        <div className="ds-no-drag relative z-[3] flex w-full shrink-0 flex-col px-0 pb-0">
           <div
             role="separator"
             aria-orientation="horizontal"

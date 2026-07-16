@@ -30,7 +30,7 @@ const {
   writeFile
 } = require('node:fs/promises')
 const { tmpdir } = require('node:os')
-const { dirname, isAbsolute, join, relative, resolve, sep } = require('node:path')
+const { basename, dirname, isAbsolute, join, relative, resolve, sep } = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { KUN_RUNTIME_REQUIRED_PATHS } = require('./after-pack.cjs')
 
@@ -108,15 +108,11 @@ async function main() {
     ], {})
     server = await startKunServe(options)
 
-    await smokeWorkbenchAndWebview(port)
-    const host = await server.runtime.extensionPlatform.manager.activate(
-      EXTENSION_ID,
-      'onTool:echo'
-    )
-    if (!host) throw new Error('Packaged extension Node Host did not activate')
-    const tool = await smokeHeadlessTool(server.runtime, workspace)
-    const provider = await smokeCustomProvider(server.runtime, host, makeUserItem)
-    await smokeAgentTool(server.runtime, workspace, tool, provider)
+    const activated = await activateSmokeExtension(server.runtime, workspace)
+    await smokeWorkbenchAndWebview(port, activated.workspace)
+    const tool = await smokeHeadlessTool(server.runtime, activated.workspace)
+    const provider = await smokeCustomProvider(server.runtime, activated.host, makeUserItem)
+    await smokeAgentTool(server.runtime, activated.workspace, tool, provider)
 
     const diagnostics = await server.runtime.toolDiagnostics()
     if (!diagnostics.extensions.tools.some((tool) => tool.extensionId === EXTENSION_ID)) {
@@ -631,15 +627,21 @@ function smokeWebviewCsp(webviewConnectUrls = []) {
   ].join('; ')
 }
 
-async function smokeWorkbenchAndWebview(port) {
-  const workbench = await runtimeJson(port, '/v1/extensions/workbench')
+async function smokeWorkbenchAndWebview(port, workspace) {
+  const workbench = await runtimeJson(
+    port,
+    `/v1/extensions/workbench?workspace_root=${encodeURIComponent(workspace)}`
+  )
   const installed = workbench.extensions?.find((extension) => extension.id === EXTENSION_ID)
   if (!installed?.contributes?.['views.rightSidebar']?.some((view) => view.id === 'smoke')) {
     throw new Error('Packaged workbench snapshot does not expose the smoke Webview')
   }
   const created = await runtimeJson(port, '/v1/extensions/view-sessions', {
     method: 'POST',
-    body: JSON.stringify({ contributionId: `extension:${EXTENSION_ID}/smoke` })
+    body: JSON.stringify({
+      contributionId: `extension:${EXTENSION_ID}/smoke`,
+      workspaceRoot: workspace
+    })
   })
   if (typeof created.sessionId !== 'string' || typeof created.nonce !== 'string') {
     throw new Error('Packaged runtime did not create a bound Webview session')
@@ -647,6 +649,38 @@ async function smokeWorkbenchAndWebview(port) {
   await runtimeJson(port, `/v1/extensions/view-sessions/${encodeURIComponent(created.sessionId)}`, {
     method: 'DELETE'
   })
+}
+
+async function activateSmokeExtension(runtime, workspace) {
+  const platform = runtime.extensionPlatform
+  const entry = await platform.registry.get(EXTENSION_ID)
+  const active = entry?.useDevelopment
+    ? entry.development
+    : entry?.selectedVersion
+      ? entry.versions[entry.selectedVersion]
+      : undefined
+  if (!active) throw new Error('Packaged smoke extension has no selected registry version')
+  const canonicalWorkspace = realpathSync(workspace)
+  const workspaceKey = platform.paths.workspaceKey(canonicalWorkspace)
+  await platform.registry.setWorkspaceEnabled(EXTENSION_ID, workspaceKey, true)
+  await platform.registry.setWorkspacePermissionGrant(
+    EXTENSION_ID,
+    workspaceKey,
+    [...active.grantedPermissions],
+    active.manifest.version
+  )
+  const host = await platform.manager.activate(EXTENSION_ID, 'onTool:echo', {
+    workspaceRoot: canonicalWorkspace,
+    workspaceContext: {
+      id: workspaceKey,
+      name: basename(canonicalWorkspace) || 'Packaged smoke workspace',
+      root: canonicalWorkspace,
+      trusted: true,
+      active: true
+    }
+  })
+  if (!host) throw new Error('Packaged extension Node Host did not activate')
+  return { host, workspace: canonicalWorkspace }
 }
 
 async function smokeHeadlessTool(runtime, workspace) {

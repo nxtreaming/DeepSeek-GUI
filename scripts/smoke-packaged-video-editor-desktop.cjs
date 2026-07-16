@@ -214,20 +214,25 @@ async function main() {
 
     let snapshot = await waitForGuestSnapshot(
       electronApplication,
-      (value) => value.ready && value.lang.toLowerCase().startsWith('zh') && value.theme === 'light',
+      (value) => value.ready &&
+        value.lang.toLowerCase().startsWith('zh') &&
+        value.theme === 'light' &&
+        value.text.includes('开始你的第一支作品') &&
+        value.text.includes('Kun 视频剪辑'),
       'Chinese/light Kun Video Editor View',
       timeoutMs
     )
     assertNoGuestErrors(snapshot, 'initializing the Chinese/light editor')
-    if (!snapshot.text.includes('新建项目') || !snapshot.text.includes('Kun 视频剪辑')) {
-      throw new Error(`Video editor did not follow Kun's Chinese locale: ${guestDiagnostic(snapshot)}`)
-    }
 
-    await setGuestFormValue(electronApplication, '.new-project-form input', 'Desktop E2E Alpha')
-    await submitGuestForm(electronApplication, '.new-project-form')
+    await setGuestFormValue(
+      electronApplication,
+      '.onboarding-project-card input',
+      'Desktop E2E Alpha'
+    )
+    await submitGuestForm(electronApplication, '.onboarding-project-card')
     snapshot = await waitForGuestSnapshot(
       electronApplication,
-      (value) => value.projectName === 'Desktop E2E Alpha' && Boolean(value.projectId),
+      (value) => value.projectName === 'Desktop E2E Alpha' && Boolean(value.projectId) && !value.busy,
       'first video project creation',
       timeoutMs
     )
@@ -238,7 +243,7 @@ async function main() {
     snapshot = await waitForGuestSnapshot(
       electronApplication,
       (value) => value.assets.includes(basename(videoFixture)) &&
-        value.selectedAssetName === basename(videoFixture) && value.revision >= 1,
+        value.selectedAssetName === basename(videoFixture) && value.revision >= 1 && !value.busy,
       'real MP4 import and ffprobe metadata',
       timeoutMs
     )
@@ -247,7 +252,9 @@ async function main() {
     await clickGuestButton(electronApplication, '导入逐字稿')
     snapshot = await waitForGuestSnapshot(
       electronApplication,
-      (value) => value.transcriptCount === 3 && value.text.includes('This range stays editable.'),
+      (value) => value.transcriptCount === 3 &&
+        value.text.includes('This range stays editable.') &&
+        !value.busy,
       'real SRT import',
       timeoutMs
     )
@@ -257,7 +264,7 @@ async function main() {
     await clickGuestSelector(electronApplication, '.transcript-cut', 1)
     snapshot = await waitForGuestSnapshot(
       electronApplication,
-      (value) => value.revision > revisionBeforeEdit,
+      (value) => value.revision > revisionBeforeEdit && !value.busy,
       'manual transcript-range edit',
       timeoutMs
     )
@@ -266,16 +273,18 @@ async function main() {
     await clickGuestButton(electronApplication, '生成字幕')
     snapshot = await waitForGuestSnapshot(
       electronApplication,
-      (value) => value.captionCount > 0,
+      (value) => value.captionCount > 0 && !value.busy,
       'caption generation from imported transcript',
       timeoutMs
     )
     assertNoGuestErrors(snapshot, 'generating captions')
 
-    await clickGuestButton(electronApplication, '导出 SRT')
+    await clickGuestSelector(electronApplication, '#video-editor-tab-output')
+    await clickGuestButton(electronApplication, '导出 SRT', '.output-kind-options')
+    await clickGuestButton(electronApplication, '导出 SRT', '.export-primary-row')
     snapshot = await waitForGuestSnapshot(
       electronApplication,
-      (value) => value.jobStates.includes('completed'),
+      (value) => value.jobStates.includes('completed') && !value.busy,
       'durable standalone SRT export',
       jobTimeoutMs
     )
@@ -285,11 +294,14 @@ async function main() {
       throw new Error('Desktop SRT export did not contain a bounded timed caption cue')
     }
 
+    await clickGuestSelector(electronApplication, '.create-project-toggle')
     await setGuestFormValue(electronApplication, '.new-project-form input', 'Desktop E2E Beta')
     await submitGuestForm(electronApplication, '.new-project-form')
     snapshot = await waitForGuestSnapshot(
       electronApplication,
-      (value) => value.projectName === 'Desktop E2E Beta' && value.projectId !== firstProjectId,
+      (value) => value.projectName === 'Desktop E2E Beta' &&
+        value.projectId !== firstProjectId &&
+        !value.busy,
       'second project creation',
       timeoutMs
     )
@@ -320,7 +332,7 @@ async function main() {
     snapshot = await waitForGuestSnapshot(
       electronApplication,
       (value) => value.lang.toLowerCase().startsWith('en') && value.theme === 'dark' &&
-        value.text.includes('Import media') && value.text.includes('Kun Video Editor'),
+        value.text.toLowerCase().includes('ready to deliver') && value.text.includes('Output mode'),
       'English/dark View update from Kun settings',
       timeoutMs
     )
@@ -901,6 +913,7 @@ async function readGuestSnapshot(electronApplication) {
     const revisionText = document.querySelector('.project-actions .revision-badge')?.textContent ?? ''
     return {
       ready: document.readyState === 'complete' && typeof globalThis.kunExtension?.request === 'function',
+      busy: document.querySelector('#video-editor-main')?.getAttribute('aria-busy') === 'true',
       lang: document.documentElement.lang || '',
       theme: document.documentElement.dataset.theme || document.querySelector('.editor-app')?.dataset.theme || '',
       text: text.slice(0, 32_000),
@@ -970,20 +983,30 @@ async function submitGuestForm(electronApplication, selector) {
   if (!submitted) throw new Error(`Cannot submit Kun Video Editor form: ${selector}`)
 }
 
-async function clickGuestButton(electronApplication, text, withinSelector) {
-  const clicked = await evaluateVideoEditorGuest(electronApplication, `(() => {
-    const root = ${withinSelector ? `document.querySelector(${JSON.stringify(withinSelector)})` : 'document'}
-    if (!root) return false
-    const button = [...root.querySelectorAll('button')].find((candidate) =>
-      candidate.textContent?.trim() === ${JSON.stringify(text)} && !candidate.disabled
-    )
-    if (!button) return false
-    button.click()
-    return true
-  })()`)
-  if (!clicked) {
+async function clickGuestButton(electronApplication, text, withinSelector, timeoutMs = 15_000) {
+  try {
+    await pollUntil(() => evaluateVideoEditorGuest(electronApplication, `(() => {
+      const root = ${withinSelector ? `document.querySelector(${JSON.stringify(withinSelector)})` : 'document'}
+      if (!root) return false
+      const button = [...root.querySelectorAll('button')].find((candidate) =>
+        (
+          candidate.textContent?.trim() === ${JSON.stringify(text)} ||
+          candidate.querySelector('strong')?.textContent?.trim() === ${JSON.stringify(text)} ||
+          candidate.childNodes[0]?.textContent?.trim() === ${JSON.stringify(text)}
+        ) && !candidate.disabled
+      )
+      if (!button) return false
+      button.click()
+      return true
+    })()`), {
+      timeoutMs,
+      description: `enabled video editor button ${JSON.stringify(text)}`
+    })
+  } catch (error) {
     const snapshot = await readGuestSnapshot(electronApplication).catch(() => undefined)
-    throw new Error(`Cannot click enabled video editor button ${JSON.stringify(text)}: ${guestDiagnostic(snapshot)}`)
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}: ${guestDiagnostic(snapshot)}`
+    )
   }
 }
 
@@ -1206,6 +1229,7 @@ function guestDiagnostic(snapshot) {
   if (!snapshot) return 'unavailable'
   return JSON.stringify({
     ready: snapshot.ready,
+    busy: snapshot.busy,
     lang: snapshot.lang,
     theme: snapshot.theme,
     projectId: snapshot.projectId,

@@ -180,7 +180,11 @@ import {
   removeUiPlugin
 } from '../services/ui-plugin-service'
 import { UiPluginCdpThemeController } from '../services/ui-plugin-cdp-theme-controller'
-import { buildUiPluginBackgroundCss, buildUiPluginTokenCss } from '../../shared/ui-plugin'
+import {
+  buildUiPluginBackgroundCss,
+  buildUiPluginPresentationCss,
+  buildUiPluginTokenCss
+} from '../../shared/ui-plugin'
 import { ensureBundledUiPlugins } from '../ui-plugin-bundled'
 import { ensureBundledSkills } from '../skill-bundled'
 import {
@@ -1317,6 +1321,7 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       // CSS builders. The renderer cannot supply CSS or executable payloads.
       const css = [
         buildUiPluginTokenCss(loaded.manifest),
+        buildUiPluginPresentationCss(loaded.manifest),
         buildUiPluginBackgroundCss(loaded.manifest, loaded.backgrounds)
       ]
         .filter(Boolean)

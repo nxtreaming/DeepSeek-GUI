@@ -29,6 +29,15 @@ const electronMock = vi.hoisted(() => ({
   openPath: vi.fn(async () => ''),
   showItemInFolder: vi.fn()
 }))
+const uiPluginMocks = vi.hoisted(() => ({
+  ensureBundledUiPlugins: vi.fn(async () => undefined),
+  installUiPluginFromDirectory: vi.fn(),
+  listUiPlugins: vi.fn(),
+  loadUiPluginFigures: vi.fn(),
+  removeUiPlugin: vi.fn(),
+  activate: vi.fn(async (_pluginId: string, _css: string) => undefined),
+  deactivate: vi.fn(async () => undefined)
+}))
 
 vi.mock('electron', () => ({
   app: {
@@ -43,6 +52,33 @@ vi.mock('electron', () => ({
     handle: vi.fn((channel: string, handler: (event: unknown, payload?: unknown) => Promise<unknown>) => {
       handlers.set(channel, handler)
     })
+  }
+}))
+
+vi.mock('../services/ui-plugin-service', () => ({
+  installUiPluginFromDirectory: uiPluginMocks.installUiPluginFromDirectory,
+  listUiPlugins: uiPluginMocks.listUiPlugins,
+  loadUiPluginFigures: uiPluginMocks.loadUiPluginFigures,
+  removeUiPlugin: uiPluginMocks.removeUiPlugin
+}))
+
+vi.mock('../ui-plugin-bundled', () => ({
+  ensureBundledUiPlugins: uiPluginMocks.ensureBundledUiPlugins
+}))
+
+vi.mock('../services/ui-plugin-cdp-theme-controller', () => ({
+  UiPluginCdpThemeController: class {
+    activePluginId: string | null = null
+
+    async activate(pluginId: string, css: string): Promise<void> {
+      await uiPluginMocks.activate(pluginId, css)
+      this.activePluginId = pluginId
+    }
+
+    async deactivate(): Promise<void> {
+      await uiPluginMocks.deactivate()
+      this.activePluginId = null
+    }
   }
 }))
 
@@ -111,6 +147,13 @@ describe('registerAppIpcHandlers', () => {
     electronMock.showMessageBox.mockReset()
     electronMock.openPath.mockClear()
     electronMock.showItemInFolder.mockClear()
+    uiPluginMocks.ensureBundledUiPlugins.mockClear()
+    uiPluginMocks.installUiPluginFromDirectory.mockReset()
+    uiPluginMocks.listUiPlugins.mockReset()
+    uiPluginMocks.loadUiPluginFigures.mockReset()
+    uiPluginMocks.removeUiPlugin.mockReset()
+    uiPluginMocks.activate.mockClear()
+    uiPluginMocks.deactivate.mockClear()
   })
 
   afterEach(() => {
@@ -288,6 +331,64 @@ describe('registerAppIpcHandlers', () => {
         /trusted workbench frame/
       )
     }
+  })
+
+  it('builds presentation variables in Main before activating the fixed CDP stylesheet', async () => {
+    const mainFrame = { processId: 10, routingId: 20 }
+    const contents = { id: 7, mainFrame }
+    const mainWindow = { isDestroyed: () => false, webContents: contents }
+    uiPluginMocks.loadUiPluginFigures.mockResolvedValueOnce({
+      ok: true,
+      manifest: {
+        id: 'portrait-theme',
+        name: 'Portrait theme',
+        version: '1.0.0',
+        figures: { portrait: 'img/portrait.png' },
+        presentation: {
+          character: {
+            anchor: 'right',
+            size: 'hero',
+            offsetX: 4,
+            offsetY: -2,
+            opacity: 0.93,
+            frame: 'crystal',
+            motion: 'float',
+            contentReserve: 'wide'
+          },
+          readability: { scrim: 'opposite-character', strength: 'medium' },
+          surfaces: {
+            sidebar: 'glass',
+            topbar: 'translucent',
+            composer: 'strong-glass',
+            cards: 'glass'
+          }
+        }
+      },
+      figures: { portrait: 'data:image/png;base64,AAAA' },
+      backgrounds: {}
+    })
+    registerAppIpcHandlers(registerOptions({ getMainWindow: () => mainWindow as never }))
+
+    const response = await handlers.get('ui-plugin:theme:activate')?.(
+      { sender: contents, senderFrame: mainFrame },
+      { id: 'portrait-theme' }
+    )
+
+    expect(response).toMatchObject({
+      ok: true,
+      manifest: { id: 'portrait-theme' },
+      figures: { portrait: 'data:image/png;base64,AAAA' }
+    })
+    expect(uiPluginMocks.ensureBundledUiPlugins).toHaveBeenCalledOnce()
+    expect(uiPluginMocks.activate).toHaveBeenCalledOnce()
+    const [pluginId, css] = uiPluginMocks.activate.mock.calls[0] ?? []
+    expect(pluginId).toBe('portrait-theme')
+    expect(css).toContain("html[data-ui-plugin='portrait-theme']")
+    expect(css).toContain('--kun-ui-plugin-character-offset-x: 4%;')
+    expect(css).toContain('--kun-ui-plugin-character-offset-y: -2%;')
+    expect(css).toContain('--kun-ui-plugin-character-opacity: 0.93;')
+    expect(css).not.toContain('crystal')
+    expect(css).not.toContain('opposite-character')
   })
 
   it('accepts checkpoint cleanup settings patches', async () => {

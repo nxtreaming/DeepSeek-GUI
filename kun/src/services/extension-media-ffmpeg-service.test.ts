@@ -15,6 +15,7 @@ import {
 } from './extension-media-ffmpeg-service.js'
 
 const roots: string[] = []
+const MEDIA_PROCESS_TEST_TIMEOUT_MS = 15_000
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
@@ -227,7 +228,7 @@ describe('validateAndSubstituteFfmpegArguments', () => {
   })
 })
 
-describe('ExtensionMediaFfmpegService', () => {
+describe('ExtensionMediaFfmpegService', { timeout: MEDIA_PROCESS_TEST_TIMEOUT_MS }, () => {
   it('renders to staging, promotes atomically, reports progress, and returns a read handle', async () => {
     const test = await fixture()
     const progress: unknown[] = []

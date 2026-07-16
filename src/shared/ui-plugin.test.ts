@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildUiPluginBackgroundCss,
+  buildUiPluginPresentationCss,
   buildUiPluginTokenCss,
   isSafeUiPluginBackgroundPath,
   isSafeUiPluginFigurePath,
@@ -24,6 +25,36 @@ const validManifest = {
   features: { cameos: true }
 }
 
+const validPresentationManifest = {
+  ...validManifest,
+  figures: {
+    ...validManifest.figures,
+    portrait: 'img/portrait.png'
+  },
+  presentation: {
+    character: {
+      anchor: 'right',
+      size: 'hero',
+      offsetX: 4,
+      offsetY: -2,
+      opacity: 0.94,
+      frame: 'hologram',
+      motion: 'float',
+      contentReserve: 'wide'
+    },
+    readability: {
+      scrim: 'opposite-character',
+      strength: 'strong'
+    },
+    surfaces: {
+      sidebar: 'strong-glass',
+      topbar: 'glass',
+      composer: 'strong-glass',
+      cards: 'translucent'
+    }
+  }
+}
+
 describe('normalizeUiPluginManifest', () => {
   it('accepts a fully-featured valid manifest', () => {
     const result = normalizeUiPluginManifest(validManifest)
@@ -34,6 +65,84 @@ describe('normalizeUiPluginManifest', () => {
     expect(result.manifest.labels?.zh?.working).toBe('巡航中…')
     expect(result.manifest.features?.cameos).toBe(true)
     expect(result.manifest.backgrounds).toBeUndefined()
+  })
+
+  it('strictly normalizes the host-rendered portrait presentation', () => {
+    const result = normalizeUiPluginManifest(validPresentationManifest)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.manifest.figures.portrait).toBe('img/portrait.png')
+    expect(result.manifest.presentation).toEqual(validPresentationManifest.presentation)
+  })
+
+  it('requires a portrait whenever presentation is declared', () => {
+    const result = normalizeUiPluginManifest({
+      ...validPresentationManifest,
+      figures: validManifest.figures
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.errors).toContain('presentation 需要同时声明 figures.portrait 人物图片')
+  })
+
+  it('rejects unknown presentation keys and arbitrary strings', () => {
+    const invalidPresentations = [
+      {
+        ...validPresentationManifest.presentation,
+        selector: '.ds-chat-stage'
+      },
+      {
+        ...validPresentationManifest.presentation,
+        character: {
+          ...validPresentationManifest.presentation.character,
+          css: 'position:fixed',
+          anchor: 'center'
+        }
+      },
+      {
+        ...validPresentationManifest.presentation,
+        readability: {
+          ...validPresentationManifest.presentation.readability,
+          scrim: 'linear-gradient(red, blue)'
+        }
+      },
+      {
+        ...validPresentationManifest.presentation,
+        surfaces: {
+          ...validPresentationManifest.presentation.surfaces,
+          composer: 'url(https://example.test/x)'
+        }
+      }
+    ]
+    for (const presentation of invalidPresentations) {
+      expect(
+        normalizeUiPluginManifest({ ...validPresentationManifest, presentation }).ok
+      ).toBe(false)
+    }
+  })
+
+  it('enforces integer offsets and finite 0-1 presentation opacity', () => {
+    for (const [key, value] of [
+      ['offsetX', 12.5],
+      ['offsetX', 13],
+      ['offsetY', -13],
+      ['opacity', Number.NaN],
+      ['opacity', Number.POSITIVE_INFINITY],
+      ['opacity', -0.01],
+      ['opacity', 1.01]
+    ] as const) {
+      const presentation = {
+        ...validPresentationManifest.presentation,
+        character: {
+          ...validPresentationManifest.presentation.character,
+          [key]: value
+        }
+      }
+      expect(
+        normalizeUiPluginManifest({ ...validPresentationManifest, presentation }).ok,
+        `${key}=${String(value)}`
+      ).toBe(false)
+    }
   })
 
   it('accepts a background-only plugin and keeps normalized figures compatible', () => {
@@ -267,6 +376,47 @@ describe('buildUiPluginTokenCss', () => {
     const result = normalizeUiPluginManifest({ ...validManifest, tokens: undefined })
     if (!result.ok) throw new Error('expected valid manifest')
     expect(buildUiPluginTokenCss(result.manifest)).toBe('')
+  })
+})
+
+describe('buildUiPluginPresentationCss', () => {
+  it('emits only scoped host numeric variables', () => {
+    const result = normalizeUiPluginManifest(validPresentationManifest)
+    if (!result.ok) throw new Error(result.errors.join('\n'))
+    const css = buildUiPluginPresentationCss(result.manifest)
+    expect(css).toBe(
+      "html[data-ui-plugin='starlight'] {\n" +
+        '  --kun-ui-plugin-character-offset-x: 4%;\n' +
+        '  --kun-ui-plugin-character-offset-y: -2%;\n' +
+        '  --kun-ui-plugin-character-opacity: 0.94;\n' +
+        '}'
+    )
+    expect(css).not.toContain('hologram')
+    expect(css).not.toContain('opposite-character')
+    expect(css).not.toContain('url(')
+  })
+
+  it('returns no CSS for a manifest without presentation', () => {
+    const result = normalizeUiPluginManifest(validManifest)
+    if (!result.ok) throw new Error(result.errors.join('\n'))
+    expect(buildUiPluginPresentationCss(result.manifest)).toBe('')
+  })
+
+  it('defensively rejects unnormalized numeric presentation values', () => {
+    const result = normalizeUiPluginManifest(validPresentationManifest)
+    if (!result.ok) throw new Error(result.errors.join('\n'))
+    expect(
+      buildUiPluginPresentationCss({
+        ...result.manifest,
+        presentation: {
+          ...result.manifest.presentation!,
+          character: {
+            ...result.manifest.presentation!.character,
+            offsetX: 99
+          }
+        }
+      })
+    ).toBe('')
   })
 })
 

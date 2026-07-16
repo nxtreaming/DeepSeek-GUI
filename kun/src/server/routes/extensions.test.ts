@@ -188,8 +188,8 @@ describe('extension management routes', () => {
       code: 'EXTENSION_VERSION_CONFLICT',
       details: { expectedVersion: '1.0.0', currentVersion: '2.0.0' }
     })
-    expect((await runtime.registry.get('acme.demo'))?.workspacePermissionGrants)
-      .not.toHaveProperty(workspaceKey)
+    expect((await runtime.registry.get('acme.demo'))?.workspacePermissionGrants[workspaceKey])
+      .toEqual([])
     expect(beforePermissionChange).not.toHaveBeenCalled()
 
     const rollback = await dispatch(router, 'POST', '/v1/extensions/acme.demo/rollback', {}, true)

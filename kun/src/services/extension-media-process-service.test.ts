@@ -14,6 +14,7 @@ import {
 } from './extension-media-process-service.js'
 
 const roots: string[] = []
+const MEDIA_PROCESS_TEST_TIMEOUT_MS = 15_000
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
@@ -46,7 +47,7 @@ async function fixture(scriptBody: string) {
   return { root, workspace, dataDir, bin: await realpath(bin), principal, handles, handle }
 }
 
-describe('ExtensionMediaProcessService', () => {
+describe('ExtensionMediaProcessService', { timeout: MEDIA_PROCESS_TEST_TIMEOUT_MS }, () => {
   it('discovers a configured binary without returning its path', async () => {
     const test = await fixture(`process.stdout.write('ffprobe version 7.1-test\\n')`)
     const service = new ExtensionMediaProcessService({

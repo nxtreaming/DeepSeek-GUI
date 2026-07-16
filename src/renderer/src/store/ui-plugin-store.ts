@@ -41,6 +41,23 @@ type UiPluginState = {
 }
 
 const LEGACY_RENDERER_THEME_STYLE_ID = 'ds-ui-plugin-tokens'
+const UI_PLUGIN_PRESENTATION_ATTRIBUTES = [
+  'data-ui-plugin-presentation',
+  'data-ui-plugin-character-anchor',
+  'data-ui-plugin-character-size',
+  'data-ui-plugin-character-offset-x',
+  'data-ui-plugin-character-offset-y',
+  'data-ui-plugin-character-opacity',
+  'data-ui-plugin-character-frame',
+  'data-ui-plugin-character-motion',
+  'data-ui-plugin-content-reserve',
+  'data-ui-plugin-readability-scrim',
+  'data-ui-plugin-readability-strength',
+  'data-ui-plugin-surface-sidebar',
+  'data-ui-plugin-surface-topbar',
+  'data-ui-plugin-surface-composer',
+  'data-ui-plugin-surface-cards'
+] as const
 let activationRequestId = 0
 let activationQueue: Promise<void> = Promise.resolve()
 
@@ -56,8 +73,30 @@ function applyUiModeDom(mode: string, runtime: UiPluginRuntime | null): void {
   // Retroma 是纯配色模式:仅点亮 data-retroma-mode(浅色守卫在 CSS 侧),
   // 不走插件运行时,不注入插件 token。
   root.setAttribute('data-retroma-mode', mode === UI_MODE_RETROMA ? 'on' : 'off')
+  for (const attribute of UI_PLUGIN_PRESENTATION_ATTRIBUTES) {
+    root.removeAttribute(attribute)
+  }
   if (runtime && mode === runtime.manifest.id) {
     root.setAttribute('data-ui-plugin', runtime.manifest.id)
+    const presentation = runtime.manifest.presentation
+    if (presentation) {
+      const { character, readability, surfaces } = presentation
+      root.setAttribute('data-ui-plugin-presentation', 'on')
+      root.setAttribute('data-ui-plugin-character-anchor', character.anchor)
+      root.setAttribute('data-ui-plugin-character-size', character.size)
+      root.setAttribute('data-ui-plugin-character-offset-x', String(character.offsetX))
+      root.setAttribute('data-ui-plugin-character-offset-y', String(character.offsetY))
+      root.setAttribute('data-ui-plugin-character-opacity', String(character.opacity))
+      root.setAttribute('data-ui-plugin-character-frame', character.frame)
+      root.setAttribute('data-ui-plugin-character-motion', character.motion)
+      root.setAttribute('data-ui-plugin-content-reserve', character.contentReserve)
+      root.setAttribute('data-ui-plugin-readability-scrim', readability.scrim)
+      root.setAttribute('data-ui-plugin-readability-strength', readability.strength)
+      root.setAttribute('data-ui-plugin-surface-sidebar', surfaces.sidebar)
+      root.setAttribute('data-ui-plugin-surface-topbar', surfaces.topbar)
+      root.setAttribute('data-ui-plugin-surface-composer', surfaces.composer)
+      root.setAttribute('data-ui-plugin-surface-cards', surfaces.cards)
+    }
   } else {
     root.removeAttribute('data-ui-plugin')
   }

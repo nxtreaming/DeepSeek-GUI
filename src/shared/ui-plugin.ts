@@ -12,6 +12,7 @@ export const UI_PLUGIN_MANIFEST_FILENAME = 'manifest.json'
 
 /** 形象槽位:缺失的槽位回退默认 Kun 美术(允许"半皮肤") */
 export const UI_PLUGIN_FIGURE_SLOTS = [
+  'portrait',
   'swim',
   'surf',
   'greet',
@@ -22,6 +23,71 @@ export const UI_PLUGIN_FIGURE_SLOTS = [
 ] as const
 
 export type UiPluginFigureSlot = (typeof UI_PLUGIN_FIGURE_SLOTS)[number]
+
+/**
+ * 人物主题舞台只接受宿主枚举。插件不能提供选择器、CSS 或任意布局字符串。
+ */
+export const UI_PLUGIN_CHARACTER_ANCHORS = ['top-right', 'right', 'bottom-right'] as const
+export type UiPluginCharacterAnchor = (typeof UI_PLUGIN_CHARACTER_ANCHORS)[number]
+
+export const UI_PLUGIN_CHARACTER_SIZES = ['medium', 'large', 'hero'] as const
+export type UiPluginCharacterSize = (typeof UI_PLUGIN_CHARACTER_SIZES)[number]
+
+export const UI_PLUGIN_CHARACTER_FRAMES = [
+  'soft-card',
+  'paper',
+  'crystal',
+  'hologram',
+  'backstage',
+  'portal',
+  'polaroid',
+  'ticket',
+  'seal'
+] as const
+export type UiPluginCharacterFrame = (typeof UI_PLUGIN_CHARACTER_FRAMES)[number]
+
+export const UI_PLUGIN_CHARACTER_MOTIONS = ['none', 'breathe', 'float'] as const
+export type UiPluginCharacterMotion = (typeof UI_PLUGIN_CHARACTER_MOTIONS)[number]
+
+export const UI_PLUGIN_CONTENT_RESERVES = ['none', 'narrow', 'wide'] as const
+export type UiPluginContentReserve = (typeof UI_PLUGIN_CONTENT_RESERVES)[number]
+
+export const UI_PLUGIN_READABILITY_SCRIMS = ['none', 'opposite-character', 'full'] as const
+export type UiPluginReadabilityScrim = (typeof UI_PLUGIN_READABILITY_SCRIMS)[number]
+
+export const UI_PLUGIN_READABILITY_STRENGTHS = ['soft', 'medium', 'strong'] as const
+export type UiPluginReadabilityStrength = (typeof UI_PLUGIN_READABILITY_STRENGTHS)[number]
+
+export const UI_PLUGIN_SURFACE_MATERIALS = [
+  'solid',
+  'translucent',
+  'glass',
+  'strong-glass'
+] as const
+export type UiPluginSurfaceMaterial = (typeof UI_PLUGIN_SURFACE_MATERIALS)[number]
+
+export type UiPluginPresentation = {
+  character: {
+    anchor: UiPluginCharacterAnchor
+    size: UiPluginCharacterSize
+    offsetX: number
+    offsetY: number
+    opacity: number
+    frame: UiPluginCharacterFrame
+    motion: UiPluginCharacterMotion
+    contentReserve: UiPluginContentReserve
+  }
+  readability: {
+    scrim: UiPluginReadabilityScrim
+    strength: UiPluginReadabilityStrength
+  }
+  surfaces: {
+    sidebar: UiPluginSurfaceMaterial
+    topbar: UiPluginSurfaceMaterial
+    composer: UiPluginSurfaceMaterial
+    cards: UiPluginSurfaceMaterial
+  }
+}
 
 /** 可换肤的应用表面:整窗、侧栏和主舞台 */
 export const UI_PLUGIN_BACKGROUND_SLOTS = ['app', 'sidebar', 'stage'] as const
@@ -86,6 +152,8 @@ export type UiPluginManifestV1 = {
   figures: Partial<Record<UiPluginFigureSlot, string>>
   /** 可选:按明暗主题和应用表面声明背景层 */
   backgrounds?: UiPluginBackgrounds
+  /** 可选:由宿主固定组件渲染的人物主题舞台 */
+  presentation?: UiPluginPresentation
   /** 可选:进行中状态文案(按语言、按泳姿键) */
   labels?: Partial<Record<UiPluginLabelLocale, Partial<Record<UiPluginLabelKey, string>>>>
   /** 可选:主题 token 覆盖(仅 --ds-*) */
@@ -271,6 +339,223 @@ function normalizeUiPluginBackgroundLayer(
   return valid ? { path, fit, position, opacity } : null
 }
 
+function rejectUnknownKeys(
+  raw: Record<string, unknown>,
+  allowedKeys: readonly string[],
+  prefix: string,
+  errors: string[]
+): boolean {
+  let valid = true
+  const allowed = new Set(allowedKeys)
+  for (const key of Object.keys(raw)) {
+    if (!allowed.has(key)) {
+      errors.push(`${prefix} 不支持键 "${key}"`)
+      valid = false
+    }
+  }
+  return valid
+}
+
+function readRequiredEnum<T extends string>(
+  raw: unknown,
+  values: readonly T[],
+  path: string,
+  errors: string[]
+): T | null {
+  if (typeof raw !== 'string' || !values.includes(raw as T)) {
+    errors.push(`${path} 仅支持 ${values.join('、')}`)
+    return null
+  }
+  return raw as T
+}
+
+function readRequiredInteger(
+  raw: unknown,
+  min: number,
+  max: number,
+  path: string,
+  errors: string[]
+): number | null {
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < min || raw > max) {
+    errors.push(`${path} 需为 ${min} 到 ${max} 的整数`)
+    return null
+  }
+  return raw
+}
+
+function readRequiredUnitNumber(
+  raw: unknown,
+  path: string,
+  errors: string[]
+): number | null {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0 || raw > 1) {
+    errors.push(`${path} 需为 0-1 的有限数字`)
+    return null
+  }
+  return raw
+}
+
+function normalizeUiPluginPresentation(
+  raw: unknown,
+  errors: string[]
+): UiPluginPresentation | null {
+  if (!isPlainObject(raw)) {
+    errors.push('presentation 需为对象')
+    return null
+  }
+
+  let valid = rejectUnknownKeys(raw, ['character', 'readability', 'surfaces'], 'presentation', errors)
+  const character = raw.character
+  const readability = raw.readability
+  const surfaces = raw.surfaces
+
+  if (!isPlainObject(character)) {
+    errors.push('presentation.character 需为对象')
+    valid = false
+  }
+  if (!isPlainObject(readability)) {
+    errors.push('presentation.readability 需为对象')
+    valid = false
+  }
+  if (!isPlainObject(surfaces)) {
+    errors.push('presentation.surfaces 需为对象')
+    valid = false
+  }
+  if (!isPlainObject(character) || !isPlainObject(readability) || !isPlainObject(surfaces)) {
+    return null
+  }
+
+  valid =
+    rejectUnknownKeys(
+      character,
+      ['anchor', 'size', 'offsetX', 'offsetY', 'opacity', 'frame', 'motion', 'contentReserve'],
+      'presentation.character',
+      errors
+    ) && valid
+  valid =
+    rejectUnknownKeys(readability, ['scrim', 'strength'], 'presentation.readability', errors) &&
+    valid
+  valid =
+    rejectUnknownKeys(
+      surfaces,
+      ['sidebar', 'topbar', 'composer', 'cards'],
+      'presentation.surfaces',
+      errors
+    ) && valid
+
+  const anchor = readRequiredEnum(
+    character.anchor,
+    UI_PLUGIN_CHARACTER_ANCHORS,
+    'presentation.character.anchor',
+    errors
+  )
+  const size = readRequiredEnum(
+    character.size,
+    UI_PLUGIN_CHARACTER_SIZES,
+    'presentation.character.size',
+    errors
+  )
+  const offsetX = readRequiredInteger(
+    character.offsetX,
+    -12,
+    12,
+    'presentation.character.offsetX',
+    errors
+  )
+  const offsetY = readRequiredInteger(
+    character.offsetY,
+    -12,
+    12,
+    'presentation.character.offsetY',
+    errors
+  )
+  const opacity = readRequiredUnitNumber(
+    character.opacity,
+    'presentation.character.opacity',
+    errors
+  )
+  const frame = readRequiredEnum(
+    character.frame,
+    UI_PLUGIN_CHARACTER_FRAMES,
+    'presentation.character.frame',
+    errors
+  )
+  const motion = readRequiredEnum(
+    character.motion,
+    UI_PLUGIN_CHARACTER_MOTIONS,
+    'presentation.character.motion',
+    errors
+  )
+  const contentReserve = readRequiredEnum(
+    character.contentReserve,
+    UI_PLUGIN_CONTENT_RESERVES,
+    'presentation.character.contentReserve',
+    errors
+  )
+  const scrim = readRequiredEnum(
+    readability.scrim,
+    UI_PLUGIN_READABILITY_SCRIMS,
+    'presentation.readability.scrim',
+    errors
+  )
+  const strength = readRequiredEnum(
+    readability.strength,
+    UI_PLUGIN_READABILITY_STRENGTHS,
+    'presentation.readability.strength',
+    errors
+  )
+  const sidebar = readRequiredEnum(
+    surfaces.sidebar,
+    UI_PLUGIN_SURFACE_MATERIALS,
+    'presentation.surfaces.sidebar',
+    errors
+  )
+  const topbar = readRequiredEnum(
+    surfaces.topbar,
+    UI_PLUGIN_SURFACE_MATERIALS,
+    'presentation.surfaces.topbar',
+    errors
+  )
+  const composer = readRequiredEnum(
+    surfaces.composer,
+    UI_PLUGIN_SURFACE_MATERIALS,
+    'presentation.surfaces.composer',
+    errors
+  )
+  const cards = readRequiredEnum(
+    surfaces.cards,
+    UI_PLUGIN_SURFACE_MATERIALS,
+    'presentation.surfaces.cards',
+    errors
+  )
+
+  if (
+    !valid ||
+    anchor === null ||
+    size === null ||
+    offsetX === null ||
+    offsetY === null ||
+    opacity === null ||
+    frame === null ||
+    motion === null ||
+    contentReserve === null ||
+    scrim === null ||
+    strength === null ||
+    sidebar === null ||
+    topbar === null ||
+    composer === null ||
+    cards === null
+  ) {
+    return null
+  }
+
+  return {
+    character: { anchor, size, offsetX, offsetY, opacity, frame, motion, contentReserve },
+    readability: { scrim, strength },
+    surfaces: { sidebar, topbar, composer, cards }
+  }
+}
+
 export function normalizeUiPluginManifest(raw: unknown): UiPluginValidationResult {
   const errors: string[] = []
   if (!isPlainObject(raw)) {
@@ -357,6 +642,14 @@ export function normalizeUiPluginManifest(raw: unknown): UiPluginValidationResul
   )
   if (Object.keys(figures).length === 0 && backgroundCount === 0) {
     errors.push('figures 与 backgrounds 至少需要声明一个合法图片资源')
+  }
+
+  let presentation: UiPluginManifestV1['presentation']
+  if (raw.presentation !== undefined) {
+    presentation = normalizeUiPluginPresentation(raw.presentation, errors) ?? undefined
+    if (!figures.portrait) {
+      errors.push('presentation 需要同时声明 figures.portrait 人物图片')
+    }
   }
 
   let labels: UiPluginManifestV1['labels']
@@ -455,6 +748,7 @@ export function normalizeUiPluginManifest(raw: unknown): UiPluginValidationResul
       ...(description ? { description } : {}),
       figures,
       ...(Object.keys(backgrounds).length > 0 ? { backgrounds } : {}),
+      ...(presentation ? { presentation } : {}),
       ...(labels && Object.keys(labels).length > 0 ? { labels } : {}),
       ...(tokens && Object.keys(tokens).length > 0 ? { tokens } : {}),
       ...(features ? { features } : {})
@@ -498,6 +792,37 @@ export function buildUiPluginTokenCss(manifest: UiPluginManifestV1): string {
     blocks.push(`${selector} {\n${body}\n}`)
   }
   return blocks.join('\n\n')
+}
+
+/**
+ * 只把已经归一化的数值布局参数变成宿主私有变量。枚举值始终由渲染层受控
+ * data 属性和固定 CSS 消费，插件不能借此注入声明、选择器或 URL。
+ */
+export function buildUiPluginPresentationCss(manifest: UiPluginManifestV1): string {
+  const presentation = manifest.presentation
+  if (
+    !presentation ||
+    !UI_PLUGIN_ID_PATTERN.test(manifest.id) ||
+    !Number.isInteger(presentation.character.offsetX) ||
+    presentation.character.offsetX < -12 ||
+    presentation.character.offsetX > 12 ||
+    !Number.isInteger(presentation.character.offsetY) ||
+    presentation.character.offsetY < -12 ||
+    presentation.character.offsetY > 12 ||
+    !Number.isFinite(presentation.character.opacity) ||
+    presentation.character.opacity < 0 ||
+    presentation.character.opacity > 1
+  ) {
+    return ''
+  }
+
+  return (
+    `html[data-ui-plugin='${manifest.id}'] {\n` +
+    `  --kun-ui-plugin-character-offset-x: ${presentation.character.offsetX}%;\n` +
+    `  --kun-ui-plugin-character-offset-y: ${presentation.character.offsetY}%;\n` +
+    `  --kun-ui-plugin-character-opacity: ${formatCssNumber(presentation.character.opacity)};\n` +
+    `}`
+  )
 }
 
 const UI_PLUGIN_BACKGROUND_DATA_URL_PATTERN =

@@ -4,7 +4,7 @@ import { rm } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { dirname, join } from 'node:path'
-import { dialog, ipcMain, type BrowserWindow } from 'electron'
+import { dialog, ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import { z } from 'zod'
 import type { AppSettingsV1 } from '../../shared/app-settings'
 import {
@@ -108,8 +108,9 @@ export class DataMigrationController {
   registerIpc(): void {
     const handle = <T>(channel: string, handler: (...args: unknown[]) => Promise<T>) => {
       ipcMain.removeHandler(channel)
-      ipcMain.handle(channel, async (_event, ...args) => {
+      ipcMain.handle(channel, async (event, ...args) => {
         try {
+          assertTrustedDataMigrationSender(event, this.options.getMainWindow)
           return await handler(...args)
         } catch (error) {
           throw new Error(publicMigrationError(error, this.progress?.phase))
@@ -492,6 +493,26 @@ class RendererMigrationRpc {
     clearTimeout(pending.timer)
     if (response.ok) pending.resolve(response.value)
     else pending.reject(new Error(response.error || 'renderer migration request failed'))
+  }
+}
+
+export function assertTrustedDataMigrationSender(
+  event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFrame'>,
+  getMainWindow: () => BrowserWindow | null
+): void {
+  const window = getMainWindow()
+  const senderFrame = event.senderFrame
+  const mainFrame = window?.webContents.mainFrame
+  if (
+    !window ||
+    window.isDestroyed() ||
+    event.sender.id !== window.webContents.id ||
+    !senderFrame ||
+    !mainFrame ||
+    senderFrame.processId !== mainFrame.processId ||
+    senderFrame.routingId !== mainFrame.routingId
+  ) {
+    throw new Error('Data migration IPC sender is not the trusted workbench frame')
   }
 }
 

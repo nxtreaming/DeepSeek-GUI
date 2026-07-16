@@ -318,12 +318,14 @@ async function grantSmokeWorkspaceTrust(unpackedRoot, profile, workspaceRoot) {
       ? entry.versions[entry.selectedVersion]
       : undefined
   if (!active) throw new Error('Desktop smoke extension has no selected registry version')
-  const workspaceKey = paths.workspaceKey(workspaceRoot)
+  const canonicalWorkspace = await realpath(workspaceRoot)
+  const workspaceKey = paths.workspaceKey(canonicalWorkspace)
   await registry.setWorkspaceEnabled(EXTENSION_ID, workspaceKey, true)
   await registry.setWorkspacePermissionGrant(
     EXTENSION_ID,
     workspaceKey,
-    [...active.grantedPermissions]
+    [...active.grantedPermissions],
+    active.manifest.version
   )
 }
 
@@ -848,6 +850,60 @@ async function waitForContributionAndClick({
   }, sessionId)
 }
 
+async function waitForContributionTabCloseAndClick({
+  cdp,
+  sessionId,
+  contributionId,
+  timeoutMs,
+  processState: readProcessState
+}) {
+  const selector = `.ds-extension-view[data-contribution-id="${contributionId}"]`
+  const point = await pollUntil(async () => {
+    assertDesktopProcessRunning(readProcessState())
+    const evaluated = await cdp.send('Runtime.evaluate', {
+      expression: `(() => {
+        const view = document.querySelector(${JSON.stringify(selector)})
+        const panel = view?.closest('[role="tabpanel"]')
+        const tabId = panel?.getAttribute('aria-labelledby')
+        const tab = tabId ? document.getElementById(tabId) : null
+        const closeButton = tab?.parentElement?.querySelector('button:not([role="tab"])')
+        if (!(closeButton instanceof HTMLElement) || closeButton.matches(':disabled')) return null
+        closeButton.scrollIntoView({ block: 'center', inline: 'center' })
+        const rectangle = closeButton.getBoundingClientRect()
+        if (rectangle.width <= 0 || rectangle.height <= 0) return null
+        return {
+          x: rectangle.left + rectangle.width / 2,
+          y: rectangle.top + rectangle.height / 2
+        }
+      })()`,
+      returnByValue: true
+    }, sessionId)
+    return evaluationValue(evaluated, `locating the close control for ${selector}`)
+  }, { timeoutMs, description: `workbench contribution tab close ${contributionId}` })
+
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: point.x,
+    y: point.y
+  }, sessionId)
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: point.x,
+    y: point.y,
+    button: 'left',
+    buttons: 1,
+    clickCount: 1
+  }, sessionId)
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: point.x,
+    y: point.y,
+    button: 'left',
+    buttons: 0,
+    clickCount: 1
+  }, sessionId)
+}
+
 async function inspectGuestSecurity({
   cdp,
   sessionId,
@@ -1320,7 +1376,7 @@ async function assertStaleViewSessionMediaBlocked({
   // lifecycle that unmounts the Webview and disposes its View Session. The
   // guest bridge's dispose() only tears down bridge listeners and is not a UI
   // request to unmount its owning surface.
-  await waitForContributionAndClick({
+  await waitForContributionTabCloseAndClick({
     cdp,
     sessionId: workbenchSessionId,
     contributionId: CONTRIBUTION_ID,

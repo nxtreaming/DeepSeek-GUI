@@ -125,7 +125,6 @@ export function EasterEggSettingsSection({ ctx }: { ctx: Record<string, any> }):
   const busy = useUiPluginStore((s) => s.busy)
   const lastError = useUiPluginStore((s) => s.lastError)
   const initUiPlugins = useUiPluginStore((s) => s.initUiPlugins)
-  const refreshUiPlugins = useUiPluginStore((s) => s.refreshUiPlugins)
   const activateUiMode = useUiPluginStore((s) => s.activateUiMode)
   const installUiPluginFromDialog = useUiPluginStore((s) => s.installUiPluginFromDialog)
   const removeUiPluginById = useUiPluginStore((s) => s.removeUiPluginById)
@@ -133,8 +132,7 @@ export function EasterEggSettingsSection({ ctx }: { ctx: Record<string, any> }):
 
   useEffect(() => {
     void initUiPlugins()
-    void refreshUiPlugins()
-  }, [initUiPlugins, refreshUiPlugins])
+  }, [initUiPlugins])
 
   // 内置只有「默认 Kun」;iKun 是预装的示例插件,从已安装列表自然出现
   const builtinCards: ModeCard[] = [

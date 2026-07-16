@@ -18,6 +18,12 @@ const PNG_BYTES = Buffer.from(
   'base64'
 )
 
+/** 1x1, two-frame animated GIF */
+const ANIMATED_GIF_BYTES = Buffer.from(
+  'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAEALAAAAAABAAEAAAICRAEAIfkEAQAAAQAsAAAAAAEAAQAAAgJEADs=',
+  'base64'
+)
+
 const CRC32_TABLE = Array.from({ length: 256 }, (_, index) => {
   let value = index
   for (let bit = 0; bit < 8; bit += 1) {
@@ -150,6 +156,34 @@ const manifest = {
   name: '星夜',
   version: '1.0.0',
   figures: { swim: 'img/swim.png' }
+}
+
+function portraitManifest(path = 'img/portrait.png') {
+  return {
+    id: 'portrait-theme',
+    name: 'Portrait theme',
+    version: '1.0.0',
+    figures: { portrait: path },
+    presentation: {
+      character: {
+        anchor: 'right',
+        size: 'hero',
+        offsetX: 0,
+        offsetY: 0,
+        opacity: 1,
+        frame: 'soft-card',
+        motion: 'none',
+        contentReserve: 'wide'
+      },
+      readability: { scrim: 'opposite-character', strength: 'medium' },
+      surfaces: {
+        sidebar: 'glass',
+        topbar: 'glass',
+        composer: 'strong-glass',
+        cards: 'translucent'
+      }
+    }
+  }
 }
 
 const backgroundOnlyManifest = {
@@ -362,6 +396,49 @@ describe('installUiPluginFromDirectory', () => {
     if (!animatedWebp.ok) expect(animatedWebp.errors.join(';')).toContain('animated WebP')
   })
 
+  it('rejects animated portrait formats while preserving animated activity figures', async () => {
+    for (const [path, bytes] of [
+      ['img/portrait.gif', ANIMATED_GIF_BYTES],
+      ['img/portrait.png', apngBytes()],
+      ['img/portrait.webp', animatedWebpBytes()]
+    ] as const) {
+      await writeSourceAssets(portraitManifest(path), { [path]: bytes })
+      const result = await installUiPluginFromDirectory(userDataDir, sourceDir)
+      expect(result.ok, path).toBe(false)
+      if (!result.ok) expect(result.errors.join(';')).toContain('portrait 仅支持静态')
+    }
+
+    await writeSourceAssets(
+      { ...manifest, figures: { swim: 'img/swim.gif' } },
+      { 'img/swim.gif': ANIMATED_GIF_BYTES }
+    )
+    const activityFigure = await installUiPluginFromDirectory(userDataDir, sourceDir)
+    expect(activityFigure.ok, JSON.stringify(activityFigure)).toBe(true)
+    const loaded = await loadUiPluginFigures(userDataDir, 'starlight')
+    expect(loaded.ok, JSON.stringify(loaded)).toBe(true)
+    if (loaded.ok) {
+      expect(loaded.figures.swim?.startsWith('data:image/gif;base64,')).toBe(true)
+    }
+  })
+
+  it('rejects previously installed animated portraits again while loading', async () => {
+    for (const [path, bytes] of [
+      ['img/portrait.gif', ANIMATED_GIF_BYTES],
+      ['img/portrait.png', apngBytes()],
+      ['img/portrait.webp', animatedWebpBytes()]
+    ] as const) {
+      const pluginDir = join(uiPluginsRootDir(userDataDir), 'portrait-theme')
+      await rm(pluginDir, { recursive: true, force: true })
+      await mkdir(join(pluginDir, 'img'), { recursive: true })
+      await writeFile(join(pluginDir, 'manifest.json'), JSON.stringify(portraitManifest(path)))
+      await writeFile(join(pluginDir, ...path.split('/')), bytes)
+
+      const result = await loadUiPluginFigures(userDataDir, 'portrait-theme')
+      expect(result.ok, path).toBe(false)
+      if (!result.ok) expect(result.error).toContain('portrait 仅支持静态')
+    }
+  })
+
   it('rejects a structurally plausible static WebP with a truncated pixel stream', async () => {
     const exampleWebp = await readFile(
       join(process.cwd(), 'examples', 'ui-plugins', 'starlight', 'img', 'starlight-stage.webp')
@@ -508,6 +585,52 @@ describe('loadUiPluginFigures', () => {
     if (!result.ok) return
     expect(result.figures.swim?.startsWith('data:image/png;base64,')).toBe(true)
     expect(result.backgrounds).toEqual({})
+  })
+
+  it('validates and returns the presentation portrait through the figure pipeline', async () => {
+    const portraitBytes = await pngWithDecodedDimensions(1600, 2400)
+    await writeSourceAssets(portraitManifest(), { 'img/portrait.png': portraitBytes })
+    const installed = await installUiPluginFromDirectory(userDataDir, sourceDir)
+    expect(installed.ok).toBe(true)
+    if (!installed.ok) return
+    expect(installed.plugin.previewDataUrl?.startsWith('data:image/webp;base64,')).toBe(true)
+    const previewBytes = Buffer.from(installed.plugin.previewDataUrl!.split(',')[1], 'base64')
+    expect(previewBytes.byteLength).toBeLessThanOrEqual(96 * 1024)
+    const previewMetadata = await sharp(previewBytes, { animated: true }).metadata()
+    expect(previewMetadata.width).toBeLessThanOrEqual(256)
+    expect(previewMetadata.height).toBeLessThanOrEqual(256)
+    expect(previewMetadata.pages ?? 1).toBe(1)
+
+    const listed = await listUiPlugins(userDataDir)
+    expect(listed[0]?.previewDataUrl).toBe(installed.plugin.previewDataUrl)
+
+    const result = await loadUiPluginFigures(userDataDir, 'portrait-theme')
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.figures.portrait?.startsWith('data:image/png;base64,')).toBe(true)
+    expect(result.manifest.presentation?.character.frame).toBe('soft-card')
+  })
+
+  it('prefers a compact activity preview over generating a portrait thumbnail', async () => {
+    await writeSourceAssets(
+      {
+        ...portraitManifest(),
+        figures: {
+          portrait: 'img/portrait.png',
+          toggleIcon: 'img/toggle.png'
+        }
+      },
+      {
+        'img/portrait.png': await pngWithDecodedDimensions(1200, 1800),
+        'img/toggle.png': PNG_BYTES
+      }
+    )
+    const installed = await installUiPluginFromDirectory(userDataDir, sourceDir)
+    expect(installed.ok, JSON.stringify(installed)).toBe(true)
+    if (!installed.ok) return
+    expect(installed.plugin.previewDataUrl).toBe(
+      `data:image/png;base64,${PNG_BYTES.toString('base64')}`
+    )
   })
 
   it('refuses ids that escape the plugins root', async () => {

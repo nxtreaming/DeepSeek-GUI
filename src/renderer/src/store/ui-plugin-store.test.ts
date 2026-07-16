@@ -65,6 +65,9 @@ describe('UI plugin CDP theme activation', () => {
     expect(deactivateUiPluginTheme).toHaveBeenCalledOnce()
     expect(useUiPluginStore.getState().uiMode).toBe(UI_MODE_DEFAULT)
     expect(attributes.has('data-ui-plugin')).toBe(false)
+    expect(listUiPlugins).toHaveBeenCalledOnce()
+    await useUiPluginStore.getState().initUiPlugins()
+    expect(listUiPlugins).toHaveBeenCalledOnce()
     expect(createElement).not.toHaveBeenCalled()
   })
 
@@ -109,6 +112,78 @@ describe('UI plugin CDP theme activation', () => {
     expect(useUiPluginStore.getState().uiMode).toBe('beta-theme')
     expect(attributes.get('data-ui-plugin')).toBe('beta-theme')
     expect(createElement).not.toHaveBeenCalled()
+  })
+
+  it('applies only normalized presentation attributes and clears them on a fast theme switch', async () => {
+    const { attributes, localStorage } = createDomFixture()
+    const portraitManifest = {
+      id: 'portrait-theme',
+      name: 'Portrait',
+      version: '1.0.0',
+      figures: { portrait: 'img/portrait.png' },
+      presentation: {
+        character: {
+          anchor: 'bottom-right',
+          size: 'hero',
+          offsetX: 3,
+          offsetY: -4,
+          opacity: 0.92,
+          frame: 'polaroid',
+          motion: 'float',
+          contentReserve: 'wide'
+        },
+        readability: { scrim: 'opposite-character', strength: 'strong' },
+        surfaces: {
+          sidebar: 'glass',
+          topbar: 'translucent',
+          composer: 'strong-glass',
+          cards: 'solid'
+        }
+      }
+    } as const
+    const activateUiPluginTheme = vi.fn(async (id: string) => ({
+      ok: true as const,
+      manifest:
+        id === portraitManifest.id
+          ? portraitManifest
+          : { id, name: 'Plain', version: '1.0.0', figures: {} },
+      figures: id === portraitManifest.id ? { portrait: 'data:image/png;base64,AAAA' } : {}
+    }))
+    vi.stubGlobal('window', {
+      localStorage,
+      kunGui: {
+        activateUiPluginTheme,
+        deactivateUiPluginTheme: vi.fn(async () => ({ ok: true as const }))
+      }
+    })
+
+    await useUiPluginStore.getState().activateUiMode('portrait-theme')
+
+    expect(Object.fromEntries(attributes)).toMatchObject({
+      'data-ui-plugin': 'portrait-theme',
+      'data-ui-plugin-presentation': 'on',
+      'data-ui-plugin-character-anchor': 'bottom-right',
+      'data-ui-plugin-character-size': 'hero',
+      'data-ui-plugin-character-offset-x': '3',
+      'data-ui-plugin-character-offset-y': '-4',
+      'data-ui-plugin-character-opacity': '0.92',
+      'data-ui-plugin-character-frame': 'polaroid',
+      'data-ui-plugin-character-motion': 'float',
+      'data-ui-plugin-content-reserve': 'wide',
+      'data-ui-plugin-readability-scrim': 'opposite-character',
+      'data-ui-plugin-readability-strength': 'strong',
+      'data-ui-plugin-surface-sidebar': 'glass',
+      'data-ui-plugin-surface-topbar': 'translucent',
+      'data-ui-plugin-surface-composer': 'strong-glass',
+      'data-ui-plugin-surface-cards': 'solid'
+    })
+
+    await useUiPluginStore.getState().activateUiMode('plain-theme')
+
+    expect(attributes.get('data-ui-plugin')).toBe('plain-theme')
+    expect(
+      [...attributes.keys()].filter((key) => key.startsWith('data-ui-plugin-'))
+    ).toEqual([])
   })
 
   it('waits for activation before removing that plugin and leaves the default mode active', async () => {

@@ -1,5 +1,37 @@
 import { describe, expect, it, vi } from 'vitest'
-import { listRuntimeThreadsForMigration, publicMigrationError } from './data-migration-controller'
+import {
+  assertTrustedDataMigrationSender,
+  listRuntimeThreadsForMigration,
+  publicMigrationError
+} from './data-migration-controller'
+
+describe('data migration IPC sender boundary', () => {
+  const mainFrame = { processId: 10, routingId: 20 }
+  const mainContents = { id: 1, mainFrame }
+  const getMainWindow = () => ({
+    isDestroyed: () => false,
+    webContents: mainContents
+  }) as never
+
+  it('accepts only the current main workbench frame', () => {
+    expect(() => assertTrustedDataMigrationSender({
+      sender: mainContents,
+      senderFrame: mainFrame
+    } as never, getMainWindow)).not.toThrow()
+  })
+
+  it('rejects extension guests and stale workbench frames', () => {
+    expect(() => assertTrustedDataMigrationSender({
+      sender: { id: 2 },
+      senderFrame: { processId: 30, routingId: 40 }
+    } as never, getMainWindow)).toThrow(/trusted workbench frame/)
+
+    expect(() => assertTrustedDataMigrationSender({
+      sender: mainContents,
+      senderFrame: { processId: 10, routingId: 99 }
+    } as never, getMainWindow)).toThrow(/trusted workbench frame/)
+  })
+})
 
 describe('data migration runtime thread inventory', () => {
   it('requests the complete supported inventory without exceeding the route limit', async () => {

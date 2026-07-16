@@ -55,6 +55,7 @@ type AssetReadResult =
 type AssetReadOptions = {
   maxBytes?: number
   maxPixels?: number
+  requireStaticFigure?: boolean
 }
 
 type SeedBackgroundBytes = Partial<
@@ -74,6 +75,8 @@ const MIME_BY_FORMAT: Record<ImageFormat, string> = {
 // 列表会一次读取所有插件预览；背景原图只在足够小的情况下才可作为卡片预览。
 const UI_PLUGIN_BACKGROUND_PREVIEW_MAX_BYTES = 512 * 1024
 const UI_PLUGIN_BACKGROUND_PREVIEW_MAX_PIXELS = 2_100_000
+const UI_PLUGIN_PORTRAIT_PREVIEW_MAX_BYTES = 96 * 1024
+const UI_PLUGIN_PORTRAIT_PREVIEW_MAX_DIMENSION = 256
 
 const JPEG_START_OF_FRAME_MARKERS = new Set([
   0xc0,
@@ -320,6 +323,10 @@ async function validateAssetBytes(
   const asset: ValidatedAsset = { bytes, ...inspected }
   const usageError = validateAssetUsage(relativePath, asset, kind)
   if (usageError) return { ok: false, error: usageError }
+  if (options.requireStaticFigure) {
+    const staticError = validateStaticFigureUsage(asset)
+    if (staticError) return { ok: false, error: staticError }
+  }
   if (options.maxBytes !== undefined && asset.bytes.byteLength > options.maxBytes) {
     return { ok: false, error: '图片超过列表预览体积上限' }
   }
@@ -399,6 +406,13 @@ function validateAssetUsage(
     }
   }
 
+  return null
+}
+
+function validateStaticFigureUsage(asset: ValidatedAsset): string | null {
+  if (asset.format === 'gif' || asset.animated) {
+    return 'portrait 仅支持静态 png/jpeg/webp，不支持 GIF、APNG 或 animated WebP'
+  }
   return null
 }
 
@@ -521,6 +535,42 @@ function backgroundEntries(
   return entries
 }
 
+async function buildPortraitPreviewDataUrl(asset: ValidatedAsset): Promise<string | null> {
+  if (validateStaticFigureUsage(asset)) return null
+  try {
+    for (const quality of [72, 50, 32, 20]) {
+      const thumbnailBytes = await sharp(asset.bytes, {
+        failOn: 'error',
+        limitInputPixels: UI_PLUGIN_LIMITS.figureMaxPixels
+      })
+        .rotate()
+        .resize({
+          width: UI_PLUGIN_PORTRAIT_PREVIEW_MAX_DIMENSION,
+          height: UI_PLUGIN_PORTRAIT_PREVIEW_MAX_DIMENSION,
+          fit: 'inside',
+          withoutEnlargement: true
+        })
+        .webp({ quality, effort: 4 })
+        .toBuffer()
+      if (thumbnailBytes.byteLength > UI_PLUGIN_PORTRAIT_PREVIEW_MAX_BYTES) continue
+      const inspected = inspectImage(thumbnailBytes)
+      if (
+        inspected?.format !== 'webp' ||
+        inspected.animated ||
+        inspected.width > UI_PLUGIN_PORTRAIT_PREVIEW_MAX_DIMENSION ||
+        inspected.height > UI_PLUGIN_PORTRAIT_PREVIEW_MAX_DIMENSION
+      ) {
+        continue
+      }
+      return `data:${MIME_BY_FORMAT.webp};base64,${thumbnailBytes.toString('base64')}`
+    }
+  } catch {
+    // A preview is optional. Installation/loading already performs the
+    // authoritative full-image validation and should not fail for a thumbnail.
+  }
+  return null
+}
+
 async function readPluginPreview(
   pluginDir: string,
   manifest: UiPluginManifestV1
@@ -539,6 +589,14 @@ async function readPluginPreview(
     if (!relativePath) continue
     const result = await readAssetFromDirectory(pluginDir, relativePath, 'figure')
     if (result.ok) return assetDataUrl(result.asset)
+  }
+
+  const portraitPath = manifest.figures.portrait
+  if (portraitPath) {
+    const portrait = await readAssetFromDirectory(pluginDir, portraitPath, 'figure', {
+      requireStaticFigure: true
+    })
+    if (portrait.ok) return buildPortraitPreviewDataUrl(portrait.asset)
   }
 
   const backgroundPreviewOrder: Array<
@@ -630,14 +688,20 @@ export async function loadUiPluginFigures(
 
   const readCachedAsset = async (
     relativePath: string,
-    kind: 'figure' | 'background'
+    kind: 'figure' | 'background',
+    options: AssetReadOptions = {}
   ): Promise<AssetReadResult> => {
     const cached = cache.get(relativePath)
     if (cached) {
       const usageError = validateAssetUsage(relativePath, cached, kind)
-      return usageError ? { ok: false, error: usageError } : { ok: true, asset: cached }
+      if (usageError) return { ok: false, error: usageError }
+      if (options.requireStaticFigure) {
+        const staticError = validateStaticFigureUsage(cached)
+        if (staticError) return { ok: false, error: staticError }
+      }
+      return { ok: true, asset: cached }
     }
-    const result = await readAssetFromDirectory(pluginDir, relativePath, kind)
+    const result = await readAssetFromDirectory(pluginDir, relativePath, kind, options)
     if (result.ok) cache.set(relativePath, result.asset)
     return result
   }
@@ -654,7 +718,9 @@ export async function loadUiPluginFigures(
     if (!relativePath || !isSafeUiPluginFigurePath(relativePath)) {
       return { ok: false, error: `槽位 ${slot} 的图片路径不合法` }
     }
-    const result = await readCachedAsset(relativePath, 'figure')
+    const result = await readCachedAsset(relativePath, 'figure', {
+      requireStaticFigure: slot === 'portrait'
+    })
     if (!result.ok) return { ok: false, error: `槽位 ${slot} 加载失败:${result.error}` }
 
     totalFigureBytes += result.asset.bytes.byteLength
@@ -726,14 +792,20 @@ export async function installUiPluginFromDirectory(
 
   const readCachedAsset = async (
     relativePath: string,
-    kind: 'figure' | 'background'
+    kind: 'figure' | 'background',
+    options: AssetReadOptions = {}
   ): Promise<AssetReadResult> => {
     const cached = assetFiles.get(relativePath)
     if (cached) {
       const usageError = validateAssetUsage(relativePath, cached, kind)
-      return usageError ? { ok: false, error: usageError } : { ok: true, asset: cached }
+      if (usageError) return { ok: false, error: usageError }
+      if (options.requireStaticFigure) {
+        const staticError = validateStaticFigureUsage(cached)
+        if (staticError) return { ok: false, error: staticError }
+      }
+      return { ok: true, asset: cached }
     }
-    const result = await readAssetFromDirectory(sourceDir, relativePath, kind)
+    const result = await readAssetFromDirectory(sourceDir, relativePath, kind, options)
     if (result.ok) assetFiles.set(relativePath, result.asset)
     return result
   }
@@ -746,7 +818,9 @@ export async function installUiPluginFromDirectory(
 
   for (const [slot, relativePath] of Object.entries(manifest.figures)) {
     if (!relativePath) continue
-    const result = await readCachedAsset(relativePath, 'figure')
+    const result = await readCachedAsset(relativePath, 'figure', {
+      requireStaticFigure: slot === 'portrait'
+    })
     if (!result.ok) {
       errors.push(`槽位 ${slot}(${relativePath}):${result.error}`)
       continue
@@ -843,7 +917,8 @@ export async function seedUiPlugin(
     relativePath: string,
     bytes: Buffer,
     kind: 'figure' | 'background',
-    context: string
+    context: string,
+    options: AssetReadOptions = {}
   ): Promise<ValidatedAsset | null> => {
     const existing = assetFiles.get(relativePath)
     if (existing) {
@@ -856,9 +931,16 @@ export async function seedUiPlugin(
         errors.push(`${context}:${usageError}`)
         return null
       }
+      if (options.requireStaticFigure) {
+        const staticError = validateStaticFigureUsage(existing)
+        if (staticError) {
+          errors.push(`${context}:${staticError}`)
+          return null
+        }
+      }
       return existing
     }
-    const result = await validateAssetBytes(relativePath, bytes, kind)
+    const result = await validateAssetBytes(relativePath, bytes, kind, options)
     if (!result.ok) {
       errors.push(`${context}:${result.error}`)
       return null
@@ -880,7 +962,9 @@ export async function seedUiPlugin(
       errors.push(`槽位 ${slot} 缺少预装图片数据`)
       continue
     }
-    const asset = await registerAsset(relativePath, bytes, 'figure', `槽位 ${slot}`)
+    const asset = await registerAsset(relativePath, bytes, 'figure', `槽位 ${slot}`, {
+      requireStaticFigure: slot === 'portrait'
+    })
     if (!asset) continue
     totalFigureBytes += bytes.byteLength
     totalFigurePixels += asset.width * asset.height

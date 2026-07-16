@@ -515,7 +515,9 @@ export type CoreComponentPrototypeJson = {
   title: string
   relativePath: string
   viewport: { width: number; height: number }
-  profile: 'component-designer'
+  /** Missing on historical component-designer payloads. */
+  producer?: 'main-agent' | 'component-designer'
+  profile?: 'component-designer'
   childId?: string
   byteSize?: number
   contentHash?: string

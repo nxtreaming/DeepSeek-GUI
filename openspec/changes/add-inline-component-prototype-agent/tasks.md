@@ -25,3 +25,11 @@
 - [x] 4.1 Run focused Kun and renderer Vitest suites plus `npm run build:kun`.
 - [x] 4.2 Run repository `npm run typecheck`, `npm run test`, and `npm run build`; classify unrelated baseline failures.
 - [x] 4.3 Run `git diff --check` and audit every proposal/design/task requirement against current files and test evidence.
+
+## 5. Direct Publication And Optional Delegation
+
+- [x] 5.1 Accept complete component HTML in `design_component`, publish it without a child run, and keep the provider available when subagents are disabled.
+- [x] 5.2 Add producer metadata with backward-compatible parsing for existing delegated prototype payloads.
+- [x] 5.3 Show whether the inline artifact came from Kun directly or the optional design child agent.
+- [x] 5.4 Add runtime and renderer regression tests for direct publication, disabled delegation, legacy payloads, and producer labels.
+- [x] 5.5 Run focused tests, typecheck/build verification, lint the touched files, and audit the revised change.

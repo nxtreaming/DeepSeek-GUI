@@ -789,6 +789,7 @@ describe('component prototype mapping', () => {
             artifactId: 'component_abcdef1234',
             relativePath: '.kun-design/component-prototypes/date-range/prototype.html',
             viewport: { width: 720, height: 460 },
+            producer: 'component-designer',
             profile: 'component-designer'
           }
         }
@@ -799,6 +800,41 @@ describe('component prototype mapping', () => {
   it('maps completed and failed prototype status independently of the generic item status', () => {
     expect(chatBlockFromItem(item('completed'))).toMatchObject({ kind: 'tool', status: 'success' })
     expect(chatBlockFromItem(item('failed'))).toMatchObject({ kind: 'tool', status: 'error' })
+  })
+
+  it('maps direct main-agent prototypes without child metadata', () => {
+    const direct = item('completed')
+    const prototype = (direct.output as Record<string, unknown>).componentPrototype as Record<string, unknown>
+    delete prototype.profile
+    delete prototype.childId
+    prototype.producer = 'main-agent'
+
+    expect(chatBlockFromItem(direct)).toMatchObject({
+      kind: 'tool',
+      status: 'success',
+      meta: {
+        componentPrototype: {
+          producer: 'main-agent',
+          status: 'completed'
+        }
+      }
+    })
+  })
+
+  it('keeps historical component-designer payloads compatible when producer is absent', () => {
+    const legacy = item('completed')
+    const prototype = (legacy.output as Record<string, unknown>).componentPrototype as Record<string, unknown>
+    delete prototype.producer
+
+    expect(chatBlockFromItem(legacy)).toMatchObject({
+      kind: 'tool',
+      meta: {
+        componentPrototype: {
+          producer: 'component-designer',
+          profile: 'component-designer'
+        }
+      }
+    })
   })
 
   it('surfaces the same structured card metadata through a live SSE item update', async () => {

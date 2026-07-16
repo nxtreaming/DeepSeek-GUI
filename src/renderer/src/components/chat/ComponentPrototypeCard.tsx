@@ -28,7 +28,14 @@ export function componentPrototypeFromBlock(block: ToolBlock): ComponentPrototyp
   const value = block.meta?.componentPrototype
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const raw = value as Record<string, unknown>
-  if (raw.version !== 1 || raw.profile !== 'component-designer') return null
+  if (raw.version !== 1) return null
+  const profile = raw.profile === 'component-designer' ? 'component-designer' : undefined
+  const producer = raw.producer === 'main-agent' || raw.producer === 'component-designer'
+    ? raw.producer
+    : profile === 'component-designer'
+      ? 'component-designer'
+      : undefined
+  if (!producer || (producer === 'main-agent' && profile)) return null
   if (raw.status !== 'preparing' && raw.status !== 'running' && raw.status !== 'completed' && raw.status !== 'failed') {
     return null
   }
@@ -60,7 +67,8 @@ export function componentPrototypeFromBlock(block: ToolBlock): ComponentPrototyp
     title,
     relativePath,
     viewport: { width: viewport.width, height: viewport.height },
-    profile: 'component-designer',
+    producer,
+    ...(producer === 'component-designer' ? { profile: 'component-designer' as const } : {}),
     ...(typeof raw.childId === 'string' && raw.childId.trim() ? { childId: raw.childId.trim() } : {}),
     ...(typeof raw.byteSize === 'number' && Number.isInteger(raw.byteSize) && raw.byteSize >= 0
       ? { byteSize: raw.byteSize }
@@ -118,6 +126,12 @@ export function ComponentPrototypeCard({
   const running = prototype.status === 'preparing' || prototype.status === 'running'
   const failed = prototype.status === 'failed' || block.status === 'error'
   const frame = componentPrototypeFrameSize(prototype, mode)
+  const producerLabel = prototype.producer === 'main-agent'
+    ? t('componentPrototypeMainAgent')
+    : t('componentPrototypeSubagent')
+  const producerSummary = prototype.producer === 'main-agent'
+    ? t('componentPrototypeGeneratedByMainAgent')
+    : t('componentPrototypeGeneratedBy')
   const prompt = (action: 'adopt' | 'iterate'): void => {
     onPrompt?.(componentPrototypeFollowUpPrompt(
       prototype,
@@ -162,7 +176,7 @@ export function ComponentPrototypeCard({
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <h3 className="truncate text-[14px] font-semibold text-ds-ink">{prototype.title}</h3>
               <span className="rounded-md bg-accent/10 px-1.5 py-0.5 text-[10.5px] font-medium text-accent">
-                {t('componentPrototypeSubagent')}
+                {producerLabel}
               </span>
             </div>
             <p className="mt-0.5 truncate text-[11.5px] text-ds-faint">{prototype.relativePath}</p>
@@ -275,7 +289,7 @@ export function ComponentPrototypeCard({
 
       <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-ds-border-muted px-4 py-2.5">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] text-ds-faint">
-          <span className="inline-flex items-center gap-1"><Sparkles className="h-3 w-3" />{t('componentPrototypeGeneratedBy')}</span>
+          <span className="inline-flex items-center gap-1"><Sparkles className="h-3 w-3" />{producerSummary}</span>
           <span aria-hidden>·</span>
           <span>HTML/CSS/JS</span>
           {prototype.byteSize !== undefined ? <><span aria-hidden>·</span><span>{Math.max(1, Math.round(prototype.byteSize / 1024))} KB</span></> : null}

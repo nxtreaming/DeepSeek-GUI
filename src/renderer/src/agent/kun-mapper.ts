@@ -662,8 +662,13 @@ function extractComponentPrototype(item: CoreTurnItemJson): ComponentPrototypeMe
   ) {
     return undefined
   }
-  const profile = candidate.profile
-  if (profile !== 'component-designer') return undefined
+  const profile = candidate.profile === 'component-designer' ? 'component-designer' : undefined
+  const producer = candidate.producer === 'main-agent' || candidate.producer === 'component-designer'
+    ? candidate.producer
+    : profile === 'component-designer'
+      ? 'component-designer'
+      : undefined
+  if (!producer || (producer === 'main-agent' && profile)) return undefined
   const childId = typeof candidate.childId === 'string' && candidate.childId.trim()
     ? candidate.childId.trim().slice(0, 256)
     : undefined
@@ -686,7 +691,8 @@ function extractComponentPrototype(item: CoreTurnItemJson): ComponentPrototypeMe
     title,
     relativePath,
     viewport: { width, height },
-    profile,
+    producer,
+    ...(producer === 'component-designer' ? { profile: 'component-designer' as const } : {}),
     ...(childId ? { childId } : {}),
     ...(byteSize !== undefined ? { byteSize } : {}),
     ...(contentHash ? { contentHash } : {}),

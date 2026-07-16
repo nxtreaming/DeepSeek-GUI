@@ -45,11 +45,14 @@ type ComponentDesignRuntime = Pick<DelegationRuntime, 'enabled' | 'runChild'>
 
 type ComponentDesignArgs = {
   title: string
-  request: string
+  request?: string
+  html?: string
   existingImplementation?: string
   sourceFiles: string[]
   viewport: { width: number; height: number }
 }
+
+export type ComponentPrototypeProducer = 'main-agent' | 'component-designer'
 
 export type ComponentPrototypePayload = {
   version: 1
@@ -58,7 +61,8 @@ export type ComponentPrototypePayload = {
   title: string
   relativePath: string
   viewport: { width: number; height: number }
-  profile: typeof COMPONENT_DESIGN_PROFILE_NAME
+  producer: ComponentPrototypeProducer
+  profile?: typeof COMPONENT_DESIGN_PROFILE_NAME
   childId?: string
   byteSize?: number
   contentHash?: string
@@ -69,18 +73,17 @@ export type ComponentPrototypePayload = {
 export function buildComponentDesignToolProviders(
   runtime: ComponentDesignRuntime | undefined
 ): CapabilityToolProvider[] {
-  if (!runtime?.enabled()) return []
   return [{
     id: 'component-design',
-    kind: 'delegation',
+    kind: 'built-in',
     enabled: true,
     available: true,
     tools: [LocalToolHost.defineTool({
       name: COMPONENT_DESIGN_TOOL_NAME,
       description: [
-        'Delegate one UI component interaction design to the dedicated component-designer child agent and return an inline HTML prototype.',
-        'Use when the user wants to create, compare, or revise the interaction of a specific component and would benefit from trying it in the conversation.',
-        'Pass relevant existing implementation code and/or workspace sourceFiles plus the requested change.',
+        'Publish one interactive UI component prototype inline in the current conversation.',
+        'Prefer passing complete standalone HTML in `html`; this direct path does not start a child agent and works even when subagents are disabled.',
+        'If HTML is not ready, pass `request` plus optional existing implementation/sourceFiles to ask the component-designer child agent to generate it.',
         'Do not use for complete pages, multi-page flows, production implementation, or non-UI tasks.'
       ].join(' '),
       toolKind: 'file_change',
@@ -98,7 +101,13 @@ export function buildComponentDesignToolProviders(
             type: 'string',
             minLength: 1,
             maxLength: MAX_REQUEST_CHARS,
-            description: 'What the user wants this component interaction to become.'
+            description: 'Optional design request. Used only when complete HTML is not supplied.'
+          },
+          html: {
+            type: 'string',
+            minLength: 1,
+            maxLength: MAX_PROTOTYPE_BYTES,
+            description: 'Complete standalone component HTML to validate, persist, and display directly without a child agent.'
           },
           existingImplementation: {
             type: 'string',
@@ -121,7 +130,6 @@ export function buildComponentDesignToolProviders(
             additionalProperties: false
           }
         },
-        required: ['request'],
         additionalProperties: false
       },
       execute: async (rawArgs, context, onUpdate) => withToolBoundary(async () => {
@@ -139,15 +147,52 @@ export function buildComponentDesignToolProviders(
           { encoding: 'utf8', mode: 0o600 }
         )
 
+        const direct = Boolean(args.html)
         const basePayload: Omit<ComponentPrototypePayload, 'status'> = {
           version: COMPONENT_PROTOTYPE_CONTRACT_VERSION,
           artifactId,
           title: args.title,
           relativePath: target.relativePath,
           viewport: args.viewport,
-          profile: COMPONENT_DESIGN_PROFILE_NAME
+          producer: direct ? 'main-agent' : 'component-designer',
+          ...(!direct ? { profile: COMPONENT_DESIGN_PROFILE_NAME } : {})
         }
         await emitComponentPrototypeUpdate(onUpdate, { ...basePayload, status: 'preparing' })
+
+        if (args.html) {
+          try {
+            const artifact = await persistComponentPrototypeHtml(target.absolutePath, args.html)
+            return {
+              output: componentPrototypeOutput({
+                ...basePayload,
+                status: 'completed',
+                ...artifact,
+                summary: `Published an interactive ${args.title} component prototype.`
+              })
+            }
+          } catch (error) {
+            return {
+              output: componentPrototypeOutput({
+                ...basePayload,
+                status: 'failed',
+                error: error instanceof Error ? error.message : String(error)
+              }),
+              isError: true
+            }
+          }
+        }
+
+        if (!runtime?.enabled()) {
+          const error = 'component designer is unavailable; provide complete HTML to publish this prototype directly'
+          return {
+            output: componentPrototypeOutput({
+              ...basePayload,
+              status: 'failed',
+              error
+            }),
+            isError: true
+          }
+        }
 
         let childId = ''
         let runningUpdate: Promise<void> | undefined
@@ -160,6 +205,7 @@ export function buildComponentDesignToolProviders(
             label: `设计 ${args.title}`,
             prompt: buildComponentDesignerPrompt({
               ...args,
+              request: args.request!,
               relativePath: 'prototype.html',
               sourceContext
             }),
@@ -208,19 +254,13 @@ export function buildComponentDesignToolProviders(
             throw new Error(`component designer wrote unexpected files: ${unexpectedEntries.slice(0, 8).join(', ')}`)
           }
           const generated = await readFile(target.absolutePath, 'utf8')
-          const hardened = hardenComponentPrototypeHtml(generated)
-          if (hardened !== generated) {
-            await writeFile(target.absolutePath, hardened, { encoding: 'utf8', mode: 0o600 })
-          }
-          const info = await stat(target.absolutePath)
-          const contentHash = createHash('sha256').update(hardened).digest('hex')
+          const artifact = await persistComponentPrototypeHtml(target.absolutePath, generated)
           return {
             output: componentPrototypeOutput({
               ...basePayload,
               status: 'completed',
               childId: record.id,
-              byteSize: info.size,
-              contentHash,
+              ...artifact,
               summary: record.summary?.trim() || `Created an interactive ${args.title} component prototype.`
             })
           }
@@ -241,7 +281,9 @@ export function buildComponentDesignToolProviders(
 }
 
 function normalizeComponentDesignArgs(raw: Record<string, unknown>): ComponentDesignArgs {
-  const request = boundedString(raw.request, 'request', MAX_REQUEST_CHARS, true)
+  const request = boundedString(raw.request, 'request', MAX_REQUEST_CHARS, false)
+  const html = boundedString(raw.html, 'html', MAX_PROTOTYPE_BYTES, false)
+  if (!request && !html) throw new Error('either html or request is required')
   const title = boundedString(raw.title, 'title', 120, false) || 'UI component'
   const existingImplementation = boundedString(
     raw.existingImplementation,
@@ -262,7 +304,8 @@ function normalizeComponentDesignArgs(raw: Record<string, unknown>): ComponentDe
   const height = boundedInteger(viewportRaw.height, DEFAULT_VIEWPORT.height, 240, 900, 'viewport.height')
   return {
     title,
-    request,
+    ...(request ? { request } : {}),
+    ...(html ? { html } : {}),
     ...(existingImplementation ? { existingImplementation } : {}),
     sourceFiles,
     viewport: { width, height }
@@ -326,6 +369,7 @@ export function componentPrototypeRelativePath(title: string, artifactId: string
 }
 
 export function buildComponentDesignerPrompt(input: ComponentDesignArgs & {
+  request: string
   relativePath: string
   sourceContext: string
 }): string {
@@ -408,6 +452,19 @@ export function hardenComponentPrototypeHtml(content: string): string {
   const withoutExistingCsp = trimmed.replace(CSP_META_RE, '')
   const csp = `<meta http-equiv="Content-Security-Policy" content="${OFFLINE_CSP}">`
   return `${withoutExistingCsp.replace(/<head\b([^>]*)>/i, `<head$1>\n  ${csp}`)}\n`
+}
+
+async function persistComponentPrototypeHtml(
+  absolutePath: string,
+  content: string
+): Promise<{ byteSize: number; contentHash: string }> {
+  const hardened = hardenComponentPrototypeHtml(content)
+  await writeFile(absolutePath, hardened, { encoding: 'utf8', mode: 0o600 })
+  const info = await stat(absolutePath)
+  return {
+    byteSize: info.size,
+    contentHash: createHash('sha256').update(hardened).digest('hex')
+  }
 }
 
 function buildPreparingComponentPrototype(title: string): string {

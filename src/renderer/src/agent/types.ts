@@ -58,6 +58,7 @@ export type GeneratedFileReference = {
 }
 
 export type ComponentPrototypeStatus = 'preparing' | 'running' | 'completed' | 'failed'
+export type ComponentPrototypeProducer = 'main-agent' | 'component-designer'
 
 /** Durable `design_component` result rendered as an inline conversation card. */
 export type ComponentPrototypeMetadata = {
@@ -67,7 +68,8 @@ export type ComponentPrototypeMetadata = {
   title: string
   relativePath: string
   viewport: { width: number; height: number }
-  profile: 'component-designer'
+  producer: ComponentPrototypeProducer
+  profile?: 'component-designer'
   childId?: string
   byteSize?: number
   contentHash?: string

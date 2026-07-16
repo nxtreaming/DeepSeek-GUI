@@ -115,6 +115,7 @@ function createPackagedReexecInvocation({
   const env = scrubEnvironment(environment)
   Object.assign(env, {
     ELECTRON_RUN_AS_NODE: '1',
+    KUN_DISABLE_OS_CREDENTIAL_STORE: '1',
     [REEXEC_MARKER]: '1',
     NODE_ENV: 'production'
   })

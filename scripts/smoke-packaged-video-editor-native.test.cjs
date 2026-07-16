@@ -121,6 +121,7 @@ test('reexecutes the smoke in the host-native packaged Kun executable', () => {
   ])
   assert.equal(invocation.options.shell, false)
   assert.equal(invocation.options.env.ELECTRON_RUN_AS_NODE, '1')
+  assert.equal(invocation.options.env.KUN_DISABLE_OS_CREDENTIAL_STORE, '1')
   assert.equal(invocation.options.env.KUN_PACKAGED_VIDEO_EDITOR_NATIVE_SMOKE_REEXEC, '1')
   assert.equal(invocation.options.timeout, 10 * 60_000)
   assert.equal(invocation.options.killSignal, 'SIGKILL')

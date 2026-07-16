@@ -44,6 +44,10 @@ const RUNTIME_TOKEN = 'kun-packaged-extension-smoke-token'
 const PACKAGED_EXTENSION_SMOKE_SUCCESS_MARKER = 'Packaged Extension smoke OK ('
 
 async function main() {
+  // Headless release smoke profiles must not depend on an interactive OS
+  // credential service. The runtime still exercises encrypted 0600 key-file
+  // storage; production keeps its normal fail-closed keychain behavior.
+  process.env.KUN_DISABLE_OS_CREDENTIAL_STORE = '1'
   const resourcesDir = resolveResources(argumentValue('--resources'))
   if (process.env.KUN_PACKAGED_EXTENSION_SMOKE_REEXEC !== '1') {
     const runtimeExecutable = resolvePackagedRuntimeExecutable(
@@ -53,11 +57,7 @@ async function main() {
     if (runtimeExecutable) {
       const result = spawnSync(runtimeExecutable, [__filename, ...process.argv.slice(2)], {
         cwd: process.cwd(),
-        env: {
-          ...process.env,
-          ELECTRON_RUN_AS_NODE: '1',
-          KUN_PACKAGED_EXTENSION_SMOKE_REEXEC: '1'
-        },
+        env: createPackagedExtensionSmokeReexecEnvironment(process.env),
         encoding: 'utf8',
         maxBuffer: 8 * 1024 * 1024,
         stdio: ['ignore', 'pipe', 'pipe']
@@ -193,6 +193,15 @@ function assertPackagedSmokeChildResult(result) {
     throw new Error(
       'Packaged runtime smoke child exited without the required completion marker'
     )
+  }
+}
+
+function createPackagedExtensionSmokeReexecEnvironment(environment = process.env) {
+  return {
+    ...environment,
+    ELECTRON_RUN_AS_NODE: '1',
+    KUN_DISABLE_OS_CREDENTIAL_STORE: '1',
+    KUN_PACKAGED_EXTENSION_SMOKE_REEXEC: '1'
   }
 }
 
@@ -873,6 +882,7 @@ module.exports = {
   EXTENSION_ID,
   PACKAGED_EXTENSION_SMOKE_SUCCESS_MARKER,
   assertPackagedSmokeChildResult,
+  createPackagedExtensionSmokeReexecEnvironment,
   createSmokeExtension,
   installSmokeExtensionFixture,
   makeTreeWritable,

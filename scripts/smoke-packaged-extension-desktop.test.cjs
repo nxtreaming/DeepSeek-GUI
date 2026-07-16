@@ -12,6 +12,7 @@ const {
   EXTENSION_ID,
   PACKAGED_EXTENSION_SMOKE_SUCCESS_MARKER,
   assertPackagedSmokeChildResult,
+  createPackagedExtensionSmokeReexecEnvironment,
   installSmokeExtensionFixture,
   packagedResourceCandidates,
   resolvedPackagedResourceCandidates,
@@ -51,6 +52,17 @@ const linuxUserNamespaceSetup = [
   'fi',
   'unshare --user --map-root-user /bin/true'
 ].join('\n')
+
+test('forces headless packaged runtime smokes onto the encrypted file-key fallback', () => {
+  const environment = createPackagedExtensionSmokeReexecEnvironment({
+    PATH: '/usr/bin',
+    KUN_DISABLE_OS_CREDENTIAL_STORE: '0'
+  })
+  assert.equal(environment.PATH, '/usr/bin')
+  assert.equal(environment.ELECTRON_RUN_AS_NODE, '1')
+  assert.equal(environment.KUN_DISABLE_OS_CREDENTIAL_STORE, '1')
+  assert.equal(environment.KUN_PACKAGED_EXTENSION_SMOKE_REEXEC, '1')
+})
 
 test('selects host-native packaged resources and never launches desktop Electron as Node', () => {
   assert.deepEqual(platformDesktopArguments('linux'), [

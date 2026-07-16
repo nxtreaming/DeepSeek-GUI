@@ -492,13 +492,17 @@ export function registerExtensionIpcHandlers(
   ipcMain.handle('extension:enable', async (event, payload: unknown) => {
     assertTrustedWorkbenchSender(event, options.getMainWindow)
     const request = parsePayload('extension:enable', extensionEnableRequestSchema, payload)
-    const { consentRequestId, ...body } = request
+    const { consentRequestId } = request
+    const parameters = {
+      extensionId: request.extensionId,
+      ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {})
+    }
     const extension = await options.descriptors.resolvePackage(request.extensionId, request.workspaceRoot)
     const result = await performProtectedRuntimeOperation(options, event, {
       extensionId: request.extensionId,
       extensionVersion: extension.extensionVersion,
       operationKind: 'extension.enable',
-      parameters: body,
+      parameters,
       workspaceRoot: request.workspaceRoot,
       senderId: event.sender.id
     }, consentRequestId, {
@@ -541,7 +545,7 @@ export function registerExtensionIpcHandlers(
       extensionPermissionGrantRequestSchema,
       payload
     )
-    const { consentRequestId, expectedVersion, ...body } = request
+    const { consentRequestId, expectedVersion, enableAfterApply } = request
     const extension = await options.descriptors.resolvePackage(
       request.extensionId,
       request.workspaceRoot
@@ -551,42 +555,82 @@ export function registerExtensionIpcHandlers(
     }
     const currentPermissions = [...extension.grantedPermissions].sort()
     const nextPermissions = [...(request.permissions ?? [])].sort()
-    if (
+    const permissionsUnchanged =
       request.permissions !== null &&
       extension.workspaceTrusted &&
       currentPermissions.length === nextPermissions.length &&
       currentPermissions.every((permission, index) => permission === nextPermissions[index])
-    ) {
+    if (permissionsUnchanged && !enableAfterApply) {
       return {
         ok: true,
         status: 200,
         body: JSON.stringify({ unchanged: true })
       }
     }
+    const parameters = {
+      extensionId: request.extensionId,
+      expectedVersion,
+      permissions: request.permissions,
+      ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {}),
+      ...(enableAfterApply ? { enableAfterApply } : {})
+    }
+    let permissionsChanged = false
     const result = await performProtectedRuntimeOperation(options, event, {
       extensionId: request.extensionId,
       extensionVersion: expectedVersion,
       operationKind: 'extension.permissions',
-      parameters: { expectedVersion, ...body },
+      parameters,
       workspaceRoot: request.workspaceRoot,
       senderId: event.sender.id
     }, consentRequestId, {
-      title: 'Change extension permissions',
-      message: `Change permissions for ${request.extensionId} ${expectedVersion}?`,
-      detail: formatPermissionChangeReviewDetail(currentPermissions, nextPermissions)
-    }, () => options.runtimeRequest(
-      `/v1/extensions/${encodeURIComponent(request.extensionId)}/permissions`,
-      'PUT',
-      JSON.stringify({
-        workspaceRoot: request.workspaceRoot,
-        permissions: request.permissions,
-        expectedVersion
-      })
-    ))
+      title: enableAfterApply
+        ? 'Review permissions and enable extension'
+        : 'Change extension permissions',
+      message: enableAfterApply
+        ? `Review permissions and enable ${request.extensionId} ${expectedVersion}?`
+        : `Change permissions for ${request.extensionId} ${expectedVersion}?`,
+      detail: [
+        enableAfterApply === 'global'
+          ? 'After approval, Kun will apply these permissions to the selected workspace and enable the extension globally.'
+          : enableAfterApply === 'workspace'
+            ? 'After approval, Kun will apply these permissions and enable the extension in the selected workspace.'
+            : '',
+        formatPermissionChangeReviewDetail(currentPermissions, nextPermissions)
+      ].filter(Boolean).join('\n\n')
+    }, async () => {
+      if (!permissionsUnchanged) {
+        const permissionResult = await options.runtimeRequest(
+          `/v1/extensions/${encodeURIComponent(request.extensionId)}/permissions`,
+          'PUT',
+          JSON.stringify({
+            workspaceRoot: request.workspaceRoot,
+            permissions: request.permissions,
+            expectedVersion
+          })
+        )
+        if (!permissionResult.ok) return permissionResult
+        permissionsChanged = true
+        if (!enableAfterApply) return permissionResult
+      }
+      if (!enableAfterApply) {
+        return {
+          ok: true,
+          status: 200,
+          body: JSON.stringify({ unchanged: true })
+        }
+      }
+      return options.runtimeRequest(
+        `/v1/extensions/${encodeURIComponent(request.extensionId)}/enable`,
+        'POST',
+        JSON.stringify(enableAfterApply === 'workspace'
+          ? { workspaceRoot: request.workspaceRoot }
+          : {})
+      )
+    })
     // Every effective permission change invalidates sender-bound principals;
     // retaining a View here could preserve revoked account/network/storage
     // grants until the next reload.
-    if (result.ok) {
+    if (permissionsChanged) {
       disposeViewSessions(options, request.extensionId, request.workspaceRoot)
       await revokeContentScripts(
         options,

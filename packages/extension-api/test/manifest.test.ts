@@ -20,6 +20,7 @@ const manifest = {
   name: 'issues',
   publisher: 'acme',
   version: '1.2.3',
+  icon: 'assets/issue-assistant.svg',
   engines: { kun: '^0.1.0' },
   main: 'dist/main.js',
   browser: 'dist/webview/index.html',
@@ -36,9 +37,11 @@ describe('ExtensionManifestSchema', () => {
   it('parses a canonical manifest and applies safe defaults', () => {
     const parsed = parseExtensionManifest(manifest)
     expect(parsed.publisher).toBe('acme')
+    expect(parsed.icon).toBe('assets/issue-assistant.svg')
     expect(parsed.contributes['views.rightSidebar'][0].order).toBe(0)
     expect(parsed.contributes.tools[0].sideEffects).toBe('none')
     expect(parsed.localizations).toBeUndefined()
+    expect(ExtensionManifestSchema.safeParse({ ...manifest, icon: '../icon.svg' }).success).toBe(false)
   })
 
   it('resolves exact and language locale overlays without mutating executable manifest data', () => {

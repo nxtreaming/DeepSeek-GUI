@@ -18,6 +18,7 @@
   "version": "1.2.0",
   "displayName": "Issue Assistant",
   "description": "Manage issues with a sidebar and Kun Agent tools.",
+  "icon": "assets/issue-assistant.svg",
   "engines": {
     "kun": ">=0.1.0"
   },
@@ -65,6 +66,7 @@
 | `version` | 是 | 此 `.kunx` 包的 SemVer 版本 |
 | `displayName` | 否 | 面向用户的短名称，作为不可信纯文本渲染 |
 | `description` | 否 | 面向用户的说明，作为不可信纯文本渲染 |
+| `icon` | 否 | 扩展 Logo 的包内相对路径；用于扩展中心等 Host 界面，建议使用方形 SVG 或至少 80×80 的 PNG |
 | `localizations` | 否 | Host 渲染的 Manifest 和贡献显示文案的有界语言覆盖 |
 | `license` | 否 | 简短许可证标识；发布包仍必须包含 `LICENSE` |
 | `homepage` | 否 | 扩展主页 HTTPS URL |
@@ -76,6 +78,8 @@
 | `permissions` | 是 | 精确的字符串权限列表；可以为空数组 |
 | `stateSchemaVersion` | 是 | 非负整数状态 Schema 版本；与包/API 版本独立，新扩展推荐从 `1` 开始 |
 | `signature` | 否 | 当前支持的签名 metadata；用于来源证明，不代表安全审计 |
+
+未声明顶层 `icon` 时，Host 可以兼容使用第一个声明了图标的 View 容器或主 View；都没有时显示默认占位图标。Logo 文件与其他 Manifest 资源一样，必须通过包内相对路径、完整性和受控资源协议校验。
 
 `main` 与 `browser` 至少存在一个。任何要求 headless 的工具、Agent profile、模型 Provider、认证处理器、计划任务或后台命令都必须存在 `main`；Kun 不会用 `browser` 代替 Node 入口。
 

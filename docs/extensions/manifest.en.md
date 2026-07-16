@@ -18,6 +18,7 @@ Every extension package or development directory must contain `kun-extension.jso
   "version": "1.2.0",
   "displayName": "Issue Assistant",
   "description": "Manage issues with a sidebar and Kun Agent tools.",
+  "icon": "assets/issue-assistant.svg",
   "engines": {
     "kun": ">=0.1.0"
   },
@@ -65,6 +66,7 @@ Empty arrays may be omitted. A real Manifest should declare only contributions a
 | `version` | Yes | SemVer version of this `.kunx` package |
 | `displayName` | No | Short user-facing name, rendered as untrusted plain text |
 | `description` | No | User-facing description, rendered as untrusted plain text |
+| `icon` | No | Package-relative extension logo for Host surfaces such as the Extension Center; prefer a square SVG or a PNG of at least 80×80 |
 | `localizations` | No | Bounded locale overlays for Host-rendered manifest and contribution display copy |
 | `license` | No | Short license identifier; a release package still includes `LICENSE` |
 | `homepage` | No | Extension homepage HTTPS URL |
@@ -76,6 +78,8 @@ Empty arrays may be omitted. A real Manifest should declare only contributions a
 | `permissions` | Yes | Exact string permission list; may be empty |
 | `stateSchemaVersion` | Yes | Non-negative integer state Schema version, independent of package/API versions; start new extensions at `1` |
 | `signature` | No | Supported signature metadata used as provenance evidence, not a security audit |
+
+When top-level `icon` is absent, the Host may fall back to the first icon-bearing View container or primary View; otherwise it shows the default placeholder. Like other Manifest resources, the logo must pass package-relative path, integrity, and controlled-resource validation.
 
 At least one of `main` and `browser` is required. Any headless tool, Agent profile, model Provider, authentication handler, scheduled task, or background command requires `main`. Kun never substitutes `browser` for a Node entry.
 

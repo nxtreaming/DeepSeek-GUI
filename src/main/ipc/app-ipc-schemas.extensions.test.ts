@@ -86,6 +86,16 @@ describe('extension IPC schemas', () => {
       expectedVersion: undefined,
       extensionVersion: '1.2.3'
     }).success).toBe(false)
+    expect(extensionPermissionGrantRequestSchema.safeParse({
+      ...request,
+      enableAfterApply: 'global'
+    }).success).toBe(true)
+    expect(extensionPermissionGrantRequestSchema.safeParse({
+      extensionId: 'acme.example',
+      expectedVersion: '1.2.3',
+      permissions: ['ui.views'],
+      enableAfterApply: 'global'
+    }).success).toBe(false)
   })
 
   it('bounds trusted model-provider discovery inputs', () => {

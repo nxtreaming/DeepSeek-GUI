@@ -501,6 +501,7 @@ function projectInstalledVersion(version: InstalledExtensionVersion, locale?: st
     stateSchemaVersion: manifest.stateSchemaVersion,
     displayName: manifest.displayName,
     description: manifest.description,
+    icon: projectManagementIcon(manifest),
     views: projectManagedViews(manifest),
     modelProviders: structuredClone(manifest.contributes.modelProviders),
     authentication: structuredClone(manifest.contributes.authentication),
@@ -526,6 +527,7 @@ function projectDevelopment(development: DevelopmentExtensionRecord, locale?: st
     stateSchemaVersion: manifest.stateSchemaVersion,
     displayName: manifest.displayName,
     description: manifest.description,
+    icon: projectManagementIcon(manifest),
     views: projectManagedViews(manifest),
     modelProviders: structuredClone(manifest.contributes.modelProviders),
     authentication: structuredClone(manifest.contributes.authentication),
@@ -541,6 +543,25 @@ function projectManagedViews(manifest: ExtensionManifest) {
       point
     }))
   )
+}
+
+function projectManagementIcon(manifest: ExtensionManifest): string | undefined {
+  if (manifest.icon) return manifest.icon
+  const containers = manifest.contributes['views.containers']
+  for (const container of containers) {
+    if (container.icon) return container.icon
+  }
+  for (const point of [
+    'views.rightSidebar',
+    'views.editorTab',
+    'views.fullPage',
+    'views.leftSidebar',
+    'views.auxiliaryPanel'
+  ] as const) {
+    const icon = manifest.contributes[point].find((view) => view.icon)?.icon
+    if (icon) return icon
+  }
+  return undefined
 }
 
 function projectInspection(inspection: Awaited<ReturnType<typeof inspectKunxArchive>>) {

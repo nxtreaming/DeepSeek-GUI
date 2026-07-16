@@ -171,6 +171,13 @@ describe('ExtensionWorkbenchClient', () => {
     await client.reload('acme.sample')
     await client.uninstall('acme.sample')
     await client.setPermissions('acme.sample', '1.0.0', ['ui.views'], '/workspace')
+    await client.setPermissionsAndEnable(
+      'acme.sample',
+      '1.0.0',
+      ['ui.views', 'webview'],
+      '/workspace',
+      'global'
+    )
     await expect(client.invokeCommand(
       'extension:acme.sample/refresh',
       { source: 'topBar' },
@@ -188,6 +195,13 @@ describe('ExtensionWorkbenchClient', () => {
       expectedVersion: '1.0.0',
       permissions: ['ui.views'],
       workspaceRoot: '/workspace'
+    })
+    expect(api.extensionSetPermissions).toHaveBeenCalledWith({
+      extensionId: 'acme.sample',
+      expectedVersion: '1.0.0',
+      permissions: ['ui.views', 'webview'],
+      workspaceRoot: '/workspace',
+      enableAfterApply: 'global'
     })
     expect(api.extensionInvokeCommand).toHaveBeenCalledWith({
       commandId: 'extension:acme.sample/refresh',

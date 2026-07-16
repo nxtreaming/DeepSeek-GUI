@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import { useTranslation } from 'react-i18next'
 import { SidebarTitlebarToggleButton } from '../components/sidebar/SidebarPrimitives'
 import { ExtensionAccountManagement } from './ExtensionAccountManagement'
+import { extensionHostIconUrl } from './contribution-registry'
 import {
   extensionWorkbenchClient,
   type BundledExtensionSeedDiagnostic,
@@ -45,6 +46,10 @@ export function extensionEffectiveEnabled(entry: ExtensionManagementEntry, works
 
 export function extensionCanRollback(entry: ExtensionManagementEntry): boolean {
   return Boolean(entry.previousSelectedVersion && entry.previousSelectedVersion !== entry.selectedVersion)
+}
+
+export function extensionCardLogoUrl(extensionId: string, icon?: string): string | undefined {
+  return icon ? extensionHostIconUrl(extensionId, icon) : undefined
 }
 
 export function ExtensionManagementCenter({
@@ -258,7 +263,11 @@ export function ExtensionManagementCenter({
                 return (
                   <article key={entry.id} className="rounded-xl border border-ds-border bg-ds-card p-4" data-extension-id={entry.id}>
                     <div className="flex flex-wrap items-start gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent"><Puzzle className="h-5 w-5" /></div>
+                      <ExtensionCardLogo
+                        key={`${entry.id}:${selected?.version ?? ''}:${selected?.icon ?? ''}`}
+                        extensionId={entry.id}
+                        icon={selected?.icon}
+                      />
                       <div className="min-w-0 flex-1">
                         <h2 className="truncate text-[13px] font-semibold text-ds-ink">{boundedText(selected?.displayName) || entry.id}</h2>
                         <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-1 text-[10.5px] text-ds-faint"><span>{entry.id}</span><span>v{selected?.version ?? entry.selectedVersion ?? '—'}</span><span>{selected?.mutable ? copy('开发源', 'development') : boundedText(selected?.source.type) || copy('本地', 'local')}</span></div>
@@ -277,11 +286,24 @@ export function ExtensionManagementCenter({
                           <button
                             type="button"
                             disabled={busyId !== null}
-                            onClick={() => void run(
-                              entry.id,
-                              () => extensionWorkbenchClient.setEnabled(entry.id, !entry.globallyEnabled),
-                              entry.globallyEnabled ? copy('扩展已全局禁用。', 'Extension disabled globally.') : copy('扩展已全局启用。', 'Extension enabled globally.')
-                            )}
+                            onClick={() => {
+                              const nextEnabled = !entry.globallyEnabled
+                              void run(
+                                entry.id,
+                                () => nextEnabled && selected && workspaceRoot
+                                  ? extensionWorkbenchClient.setPermissionsAndEnable(
+                                      entry.id,
+                                      selected.version,
+                                      (entry.workspaceGrantedPermissions ?? selected.grantedPermissions).filter(
+                                        (permission) => selected.requestedPermissions.includes(permission)
+                                      ),
+                                      workspaceRoot,
+                                      'global'
+                                    )
+                                  : extensionWorkbenchClient.setEnabled(entry.id, nextEnabled),
+                                nextEnabled ? copy('权限已确认，扩展已全局启用。', 'Permissions confirmed and extension enabled globally.') : copy('扩展已全局禁用。', 'Extension disabled globally.')
+                              )
+                            }}
                             className="rounded-md border border-ds-border px-2 py-1 text-[10px] text-ds-muted hover:bg-ds-hover disabled:opacity-50"
                           >
                             {entry.globallyEnabled ? copy('全局关闭', 'Disable globally') : copy('全局开启', 'Enable globally')}
@@ -290,11 +312,24 @@ export function ExtensionManagementCenter({
                             <button
                               type="button"
                               disabled={busyId !== null || !entry.globallyEnabled}
-                              onClick={() => void run(
-                                entry.id,
-                                () => extensionWorkbenchClient.setEnabled(entry.id, !enabled, workspaceRoot),
-                                enabled ? copy('已在当前工作区禁用。', 'Disabled in this workspace.') : copy('已在当前工作区启用。', 'Enabled in this workspace.')
-                              )}
+                              onClick={() => {
+                                const nextEnabled = !enabled
+                                void run(
+                                  entry.id,
+                                  () => nextEnabled && selected
+                                    ? extensionWorkbenchClient.setPermissionsAndEnable(
+                                        entry.id,
+                                        selected.version,
+                                        (entry.workspaceGrantedPermissions ?? selected.grantedPermissions).filter(
+                                          (permission) => selected.requestedPermissions.includes(permission)
+                                        ),
+                                        workspaceRoot,
+                                        'workspace'
+                                      )
+                                    : extensionWorkbenchClient.setEnabled(entry.id, nextEnabled, workspaceRoot),
+                                  nextEnabled ? copy('权限已确认，扩展已在当前工作区启用。', 'Permissions confirmed and extension enabled in this workspace.') : copy('已在当前工作区禁用。', 'Disabled in this workspace.')
+                                )
+                              }}
                               className="rounded-md border border-ds-border px-2 py-1 text-[10px] text-ds-muted hover:bg-ds-hover disabled:opacity-50"
                             >
                               {enabled ? copy('此工作区关闭', 'Disable here') : copy('此工作区开启', 'Enable here')}
@@ -394,6 +429,31 @@ export function ExtensionManagementCenter({
 
 function InstallCard({ icon, title, description, action, disabled, onClick }: { icon: ReactElement; title: string; description: string; action: string; disabled: boolean; onClick: () => void }): ReactElement {
   return <div className="rounded-xl border border-ds-border bg-ds-card p-4"><div className="flex items-center gap-2 text-[13px] font-semibold text-ds-ink">{icon}{title}</div><p className="mt-2 min-h-20 text-[11px] leading-5 text-ds-faint">{description}</p><button type="button" disabled={disabled} onClick={onClick} className="mt-3 w-full rounded-lg border border-ds-border px-3 py-2 text-[11px] font-semibold text-ds-ink hover:bg-ds-hover disabled:opacity-50">{action}</button></div>
+}
+
+function ExtensionCardLogo({ extensionId, icon }: {
+  extensionId: string
+  icon?: string
+}): ReactElement {
+  const [failed, setFailed] = useState(false)
+  const src = extensionCardLogoUrl(extensionId, icon)
+  return (
+    <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-accent/10 text-accent">
+      {src && !failed ? (
+        <img
+          src={src}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+          decoding="async"
+          className="h-8 w-8 object-contain"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <Puzzle className="h-5 w-5" aria-hidden />
+      )}
+    </div>
+  )
 }
 
 function ActionButton({ icon, label, disabled = false, danger = false, onClick }: { icon: ReactElement; label: string; disabled?: boolean; danger?: boolean; onClick?: () => void }): ReactElement {

@@ -307,6 +307,7 @@ const ManifestCommonShape = {
   version: SemverSchema,
   displayName: z.string().min(1).max(128).optional(),
   description: z.string().max(4096).optional(),
+  icon: IconPathSchema.optional(),
   localizations: ManifestLocalizationsSchema.optional(),
   license: z.string().min(1).max(128).optional(),
   homepage: z.string().url().optional(),

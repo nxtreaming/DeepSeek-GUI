@@ -32,11 +32,13 @@ export function localizeProtectedExtensionPrompt(
   copy: ProtectedExtensionPromptCopy,
   locale: ProtectedExtensionPromptLocale
 ): ProtectedExtensionPromptPresentation {
+  const permissionEnable = binding.operationKind === 'extension.permissions' &&
+    copy.title === 'Review permissions and enable extension'
   if (locale !== 'zh') {
     const permissionChange = binding.operationKind === 'extension.permissions' && copy.title === 'Change extension permissions'
     return {
       ...copy,
-      approveLabel: permissionChange ? 'Apply changes' : 'Continue',
+      approveLabel: permissionEnable ? 'Apply and enable' : permissionChange ? 'Apply changes' : 'Continue',
       cancelLabel: 'Cancel',
       extensionLabel: 'Extension',
       operationLabel: 'Operation',
@@ -48,7 +50,7 @@ export function localizeProtectedExtensionPrompt(
   const permissionChange = binding.operationKind === 'extension.permissions' && copy.title === 'Change extension permissions'
   return {
     ...localized,
-    approveLabel: permissionChange ? '同意更改' : '继续',
+    approveLabel: permissionEnable ? '应用并启用' : permissionChange ? '同意更改' : '继续',
     cancelLabel: '取消',
     extensionLabel: '扩展',
     operationLabel: '操作',
@@ -107,6 +109,12 @@ function localizeKnownChineseCopy(
       return {
         title: '更改扩展权限',
         message: `要更改 ${identity} 的权限吗？`,
+        detail: copy.detail ? localizePermissionChangeReviewDetail(copy.detail) : undefined
+      }
+    case 'extension.permissions\u0000Review permissions and enable extension':
+      return {
+        title: '审核权限并启用扩展',
+        message: `请审核 ${identity} 的权限，确认后将立即启用。`,
         detail: copy.detail ? localizePermissionChangeReviewDetail(copy.detail) : undefined
       }
     case 'extension.permissions\u0000Review extension permissions':
@@ -212,6 +220,8 @@ function localizePermissionReviewDetail(detail: string): string {
 
 function localizePermissionChangeReviewDetail(detail: string): string {
   return detail
+    .replace('After approval, Kun will apply these permissions to the selected workspace and enable the extension globally.', '确认后，Kun 会把这些权限应用到当前工作区，并在全局启用此扩展。')
+    .replace('After approval, Kun will apply these permissions and enable the extension in the selected workspace.', '确认后，Kun 会应用这些权限，并在当前工作区启用此扩展。')
     .replace('This permission change applies only to the selected workspace.', '此次权限变更仅适用于所选工作区。')
     .replace('Added broker permissions:', '新增的 Broker 权限：')
     .replace('Removed broker permissions:', '移除的 Broker 权限：')

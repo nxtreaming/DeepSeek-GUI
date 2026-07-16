@@ -161,8 +161,17 @@ export const extensionReloadRequestSchema = extensionRollbackRequestSchema
 export const extensionPermissionGrantRequestSchema = extensionScopedRequestSchema.extend({
   expectedVersion: extensionVersionSchema,
   permissions: extensionPermissionListSchema.nullable(),
+  enableAfterApply: z.enum(['global', 'workspace']).optional(),
   consentRequestId: extensionConsentRequestIdSchema.optional()
-}).strict()
+}).strict().superRefine((request, context) => {
+  if (request.enableAfterApply && !request.workspaceRoot) {
+    context.addIssue({
+      code: 'custom',
+      path: ['workspaceRoot'],
+      message: 'workspaceRoot is required when permissions are applied before enabling'
+    })
+  }
+})
 
 export const extensionCommandInvocationRequestSchema = z
   .object({

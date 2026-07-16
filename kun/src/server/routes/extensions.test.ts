@@ -86,6 +86,7 @@ describe('extension management routes', () => {
       id: 'acme.demo',
       workspaceTrusted: false,
       versions: [{
+        icon: 'dist/icon.svg',
         views: [{ id: 'editor', title: 'Demo editor', point: 'views.rightSidebar' }]
       }]
     })
@@ -309,6 +310,7 @@ async function writeExtensionSource(
     name: 'demo',
     displayName: 'Demo',
     description: 'Demo extension.',
+    icon: 'dist/icon.svg',
     ...(withView ? {
       localizations: {
         'zh-CN': {
@@ -332,6 +334,7 @@ async function writeExtensionSource(
             id: 'editor',
             title: 'Demo editor',
             entry: 'dist/index.html',
+            icon: 'dist/icon.svg',
             localResourceRoots: ['dist']
           }]
         }
@@ -342,6 +345,7 @@ async function writeExtensionSource(
   await writeFile(join(root, 'README.md'), '# Demo\n')
   await writeFile(join(root, 'LICENSE'), 'MIT\n')
   await writeFile(join(root, 'dist/main.mjs'), 'export async function activate() {}\n')
+  await writeFile(join(root, 'dist/icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>\n')
   if (withView) await writeFile(join(root, 'dist/index.html'), '<!doctype html><title>Demo</title>\n')
 }
 

@@ -112,6 +112,7 @@ export class ExtensionDescriptorResolver {
       exactFiles.add(icon)
       hostIconFiles.add(icon)
     }
+    addIcon(extension.manifest.icon)
     for (const command of extension.manifest.contributes.commands) addIcon(command.icon)
     for (const container of extension.manifest.contributes['views.containers']) {
       addIcon(container.icon)

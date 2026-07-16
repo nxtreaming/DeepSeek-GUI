@@ -107,6 +107,25 @@ describe('protected extension prompt localization', () => {
     expect(prompt.detail).toContain('扩展 Node Host 本身并不是操作系统沙箱。')
   })
 
+  it('labels the combined permission review as the single enable decision', () => {
+    const prompt = localizeProtectedExtensionPrompt(binding(), {
+      title: 'Review permissions and enable extension',
+      message: 'Review permissions and enable?',
+      detail: [
+        'After approval, Kun will apply these permissions to the selected workspace and enable the extension globally.',
+        'Resulting broker permissions:\n• ui.views'
+      ].join('\n\n')
+    }, 'zh')
+
+    expect(prompt).toMatchObject({
+      title: '审核权限并启用扩展',
+      message: '请审核 kun-examples.video-editor 0.3.0 的权限，确认后将立即启用。',
+      approveLabel: '应用并启用'
+    })
+    expect(prompt.detail).toContain('应用到当前工作区，并在全局启用此扩展')
+    expect(prompt.detail).toContain('变更后的 Broker 权限：')
+  })
+
   it('localizes the complete install review without discarding security evidence', () => {
     const prompt = localizeProtectedExtensionPrompt(binding({
       operationKind: 'extension.install',

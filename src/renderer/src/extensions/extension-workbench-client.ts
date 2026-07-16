@@ -46,6 +46,7 @@ export type ExtensionManagementVersion = {
   stateSchemaVersion: number
   displayName?: string
   description?: string
+  icon?: string
   views?: Array<{
     id: string
     title: string
@@ -271,10 +272,31 @@ export class ExtensionWorkbenchClient {
     this.notifyChanged()
   }
 
+  async setPermissionsAndEnable(
+    extensionId: string,
+    expectedVersion: string,
+    permissions: string[],
+    workspaceRoot: string,
+    enableScope: 'global' | 'workspace'
+  ): Promise<void> {
+    parseBody(await window.kunGui.extensionSetPermissions({
+      extensionId,
+      expectedVersion,
+      permissions,
+      workspaceRoot,
+      enableAfterApply: enableScope
+    }))
+    this.notifyChanged()
+  }
+
   async setEnabled(extensionId: string, enabled: boolean, workspaceRoot?: string): Promise<void> {
+    const request = {
+      extensionId,
+      ...(workspaceRoot ? { workspaceRoot } : {})
+    }
     const result = enabled
-      ? await window.kunGui.extensionEnable({ extensionId, workspaceRoot })
-      : await window.kunGui.extensionDisable({ extensionId, workspaceRoot })
+      ? await window.kunGui.extensionEnable(request)
+      : await window.kunGui.extensionDisable(request)
     parseBody(result)
     this.notifyChanged()
   }

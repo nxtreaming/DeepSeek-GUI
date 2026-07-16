@@ -109,6 +109,8 @@ export type ExtensionReloadRequest = {
 export type ExtensionPermissionGrantRequest = ExtensionScopedRequest & {
   permissions: string[] | null
   expectedVersion: string
+  /** Apply the reviewed workspace grant, then enable in the same protected decision. */
+  enableAfterApply?: 'global' | 'workspace'
   consentRequestId?: string
 }
 

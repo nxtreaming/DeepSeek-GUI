@@ -293,6 +293,140 @@ describe('extension IPC security bridge', () => {
     )
   })
 
+  it.each([
+    ['global', '{}'],
+    ['workspace', JSON.stringify({ workspaceRoot: '/workspace' })]
+  ] as const)('applies reviewed permissions and enables the %s scope in one protected decision', async (
+    enableAfterApply,
+    expectedEnableBody
+  ) => {
+    const state = fixture()
+    state.descriptors.resolvePackage.mockResolvedValue({
+      extensionId: 'acme.example',
+      extensionVersion: '1.2.3',
+      grantedPermissions: [],
+      workspaceTrusted: false
+    })
+
+    await electronMock.handlers.get('extension:set-permissions')!(state.trustedEvent, {
+      extensionId: 'acme.example',
+      expectedVersion: '1.2.3',
+      permissions: ['ui.views', 'webview'],
+      workspaceRoot: '/workspace',
+      enableAfterApply
+    })
+
+    expect(state.protectedActions.authorizeAndPerform).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationKind: 'extension.permissions',
+        parameters: {
+          extensionId: 'acme.example',
+          expectedVersion: '1.2.3',
+          permissions: ['ui.views', 'webview'],
+          workspaceRoot: '/workspace',
+          enableAfterApply
+        }
+      }),
+      expect.objectContaining({
+        title: 'Review permissions and enable extension',
+        detail: expect.stringMatching(/apply these permissions[\s\S]*Resulting broker permissions/i)
+      }),
+      expect.any(Function)
+    )
+    expect(state.runtimeRequest).toHaveBeenNthCalledWith(
+      1,
+      '/v1/extensions/acme.example/permissions',
+      'PUT',
+      JSON.stringify({
+        workspaceRoot: '/workspace',
+        permissions: ['ui.views', 'webview'],
+        expectedVersion: '1.2.3'
+      })
+    )
+    expect(state.runtimeRequest).toHaveBeenNthCalledWith(
+      2,
+      '/v1/extensions/acme.example/enable',
+      'POST',
+      expectedEnableBody
+    )
+  })
+
+  it('does not change permissions or enable when the combined review is cancelled', async () => {
+    const state = fixture()
+    state.descriptors.resolvePackage.mockResolvedValue({
+      extensionId: 'acme.example',
+      extensionVersion: '1.2.3',
+      grantedPermissions: [],
+      workspaceTrusted: false
+    })
+    state.protectedActions.authorizeAndPerform.mockResolvedValueOnce(undefined)
+
+    const result = await electronMock.handlers.get('extension:set-permissions')!(state.trustedEvent, {
+      extensionId: 'acme.example',
+      expectedVersion: '1.2.3',
+      permissions: ['ui.views'],
+      workspaceRoot: '/workspace',
+      enableAfterApply: 'global'
+    })
+
+    expect(result).toMatchObject({ ok: false, status: 403 })
+    expect(state.runtimeRequest).not.toHaveBeenCalled()
+  })
+
+  it('does not enable when the reviewed permission update fails', async () => {
+    const state = fixture()
+    state.descriptors.resolvePackage.mockResolvedValue({
+      extensionId: 'acme.example',
+      extensionVersion: '1.2.3',
+      grantedPermissions: [],
+      workspaceTrusted: false
+    })
+    state.runtimeRequest.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      body: JSON.stringify({ code: 'EXTENSION_VERSION_CONFLICT' })
+    })
+
+    const result = await electronMock.handlers.get('extension:set-permissions')!(state.trustedEvent, {
+      extensionId: 'acme.example',
+      expectedVersion: '1.2.3',
+      permissions: ['ui.views'],
+      workspaceRoot: '/workspace',
+      enableAfterApply: 'workspace'
+    })
+
+    expect(result).toMatchObject({ ok: false, status: 409 })
+    expect(state.runtimeRequest).toHaveBeenCalledTimes(1)
+    expect(state.runtimeRequest).not.toHaveBeenCalledWith(
+      '/v1/extensions/acme.example/enable',
+      expect.anything(),
+      expect.anything()
+    )
+  })
+
+  it('omits an absent workspace from the protected enable binding', async () => {
+    const state = fixture()
+    state.descriptors.resolvePackage.mockResolvedValue({
+      extensionId: 'acme.example',
+      extensionVersion: '1.2.3',
+      grantedPermissions: [],
+      workspaceTrusted: true
+    })
+
+    await electronMock.handlers.get('extension:enable')!(state.trustedEvent, {
+      extensionId: 'acme.example'
+    })
+
+    expect(state.protectedActions.authorizeAndPerform).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationKind: 'extension.enable',
+        parameters: { extensionId: 'acme.example' }
+      }),
+      expect.any(Object),
+      expect.any(Function)
+    )
+  })
+
   it('rejects a stale permission review before presenting native consent', async () => {
     const state = fixture()
     state.descriptors.resolvePackage.mockResolvedValue({

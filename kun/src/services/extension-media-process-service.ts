@@ -255,6 +255,9 @@ type MediaProcessOptions = {
   ffmpegTimeoutMs?: number
   maxFfmpegProgressBytes?: number
   maxFfmpegLogBytes?: number
+  // Test fixtures are JavaScript files, which Windows cannot execute directly
+  // with the production shell-free process boundary.
+  processRunner?: typeof runBoundedProcess
 }
 
 /**
@@ -273,6 +276,7 @@ export class ExtensionMediaProcessService {
   private readonly configuredPaths: Partial<Record<MediaExecutableName, string>>
   private readonly pathEnv: string
   private readonly discoveryDirectories: string[]
+  private readonly processRunner: typeof runBoundedProcess
 
   constructor(private readonly options: MediaProcessOptions) {
     this.now = options.now ?? (() => new Date())
@@ -289,6 +293,7 @@ export class ExtensionMediaProcessService {
     }
     this.pathEnv = options.pathEnv ?? process.env.PATH ?? ''
     this.discoveryDirectories = options.discoveryDirectories ?? defaultMediaDiscoveryDirectories()
+    this.processRunner = options.processRunner ?? runBoundedProcess
   }
 
   async capabilities(principal: ExtensionPrincipal): Promise<MediaCapabilities> {
@@ -340,7 +345,7 @@ export class ExtensionMediaProcessService {
       )
     }
     const executable = await this.requireExecutable('ffprobe')
-    const result = await runBoundedProcess(executable.path, [
+    const result = await this.processRunner(executable.path, [
       '-v', 'error',
       '-hide_banner',
       '-protocol_whitelist', EXTENSION_MEDIA_INPUT_PROTOCOL_WHITELIST,
@@ -389,7 +394,7 @@ export class ExtensionMediaProcessService {
       )
     }
     const executable = await this.requireExecutable('ffmpeg')
-    const result = await runBoundedProcess(executable.path, [
+    const result = await this.processRunner(executable.path, [
       '-v', 'info',
       '-hide_banner',
       '-nostdin',
@@ -458,7 +463,7 @@ export class ExtensionMediaProcessService {
       input.samplePeriodMicros * input.maxFeaturePoints
     )
     const executable = await this.requireExecutable('ffmpeg')
-    const result = await runBoundedProcess(executable.path, [
+    const result = await this.processRunner(executable.path, [
       '-v', 'error',
       '-hide_banner',
       '-nostdin',
@@ -535,7 +540,7 @@ export class ExtensionMediaProcessService {
     }
     const maximumDurationMicros = Math.min(durationMicros, BEAT_MAX_ANALYSIS_MICROS)
     const executable = await this.requireExecutable('ffmpeg')
-    const result = await runBoundedProcess(executable.path, [
+    const result = await this.processRunner(executable.path, [
       '-v', 'error',
       '-hide_banner',
       '-nostdin',
@@ -631,7 +636,7 @@ export class ExtensionMediaProcessService {
     const embeddings: ExtensionVisualFrameAnalysis['embeddings'] = []
     for (const sample of samples) {
       options.signal?.throwIfAborted()
-      const result = await runBoundedProcess(executable.path, [
+      const result = await this.processRunner(executable.path, [
         '-v', 'error',
         '-hide_banner',
         '-nostdin',
@@ -687,7 +692,7 @@ export class ExtensionMediaProcessService {
   ): Promise<{ exitCode: number }> {
     requireProcessPermission(principal)
     const executable = await this.requireExecutable('ffmpeg')
-    const result = await runBoundedProcess(executable.path, args, {
+    const result = await this.processRunner(executable.path, args, {
       env: scrubbedEnvironment(this.pathEnv),
       timeoutMs: this.ffmpegTimeoutMs,
       maxStdoutBytes: this.maxFfmpegProgressBytes,
@@ -707,7 +712,7 @@ export class ExtensionMediaProcessService {
     )
     if (!executable) return { name, available: false }
     try {
-      const result = await runBoundedProcess(executable.path, ['-version'], {
+      const result = await this.processRunner(executable.path, ['-version'], {
         env: scrubbedEnvironment(this.pathEnv),
         timeoutMs: this.discoveryTimeoutMs,
         maxStdoutBytes: this.maxDiagnosticBytes,
@@ -717,7 +722,8 @@ export class ExtensionMediaProcessService {
       const firstLine = result.stdout.toString('utf8').split(/\r?\n/u, 1)[0]?.trim() ?? ''
       const version = boundedVersion(firstLine, name)
       const features = name === 'ffmpeg'
-        ? await inspectFfmpegFeatures(
+          ? await inspectFfmpegFeatures(
+            this.processRunner,
             executable.path,
             scrubbedEnvironment(this.pathEnv),
             this.discoveryTimeoutMs,
@@ -755,6 +761,7 @@ export class ExtensionMediaProcessService {
 }
 
 async function inspectFfmpegFeatures(
+  processRunner: typeof runBoundedProcess,
   executable: string,
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
@@ -762,19 +769,19 @@ async function inspectFfmpegFeatures(
 ): Promise<NonNullable<MediaCapability['features']>> {
   try {
     const [encoders, filters, muxers] = await Promise.all([
-      runBoundedProcess(executable, ['-hide_banner', '-encoders'], {
+      processRunner(executable, ['-hide_banner', '-encoders'], {
         env,
         timeoutMs,
         maxStdoutBytes: maxBytes,
         maxStderrBytes: maxBytes
       }),
-      runBoundedProcess(executable, ['-hide_banner', '-filters'], {
+      processRunner(executable, ['-hide_banner', '-filters'], {
         env,
         timeoutMs,
         maxStdoutBytes: maxBytes,
         maxStderrBytes: maxBytes
       }),
-      runBoundedProcess(executable, ['-hide_banner', '-muxers'], {
+      processRunner(executable, ['-hide_banner', '-muxers'], {
         env,
         timeoutMs,
         maxStdoutBytes: maxBytes,
@@ -799,14 +806,14 @@ async function inspectFfmpegFeatures(
     if (/^\s*[A-Z.]{6}\s+flac\s/mu.test(encoderText)) features.push('flac-encoder')
     if (/^\s*[A-Z.]{6}\s+pcm_s24le\s/mu.test(encoderText)) features.push('pcm-s24-encoder')
     if (/^\s*[A-Z.]{6}\s+pcm_s16le\s/mu.test(encoderText)) features.push('pcm-s16-encoder')
-    if (/^\s*[A-Z.]{3}\s+drawtext\s/mu.test(filterText)) features.push('drawtext-filter')
-    if (/^\s*[A-Z.]{3}\s+subtitles\s/mu.test(filterText)) features.push('subtitles-filter')
-    if (/^\s*[A-Z.]{3}\s+eq\s/mu.test(filterText)) features.push('eq-filter')
-    if (/^\s*[A-Z.]{3}\s+colorbalance\s/mu.test(filterText)) features.push('colorbalance-filter')
-    if (/^\s*[A-Z.]{3}\s+boxblur\s/mu.test(filterText)) features.push('boxblur-filter')
-    if (/^\s*[A-Z.]{3}\s+unsharp\s/mu.test(filterText)) features.push('unsharp-filter')
-    if (/^\s*[A-Z.]{3}\s+vignette\s/mu.test(filterText)) features.push('vignette-filter')
-    if (/^\s*[A-Z.]{3}\s+silencedetect\s/mu.test(filterText)) features.push('silencedetect-filter')
+    if (hasFfmpegFilter(filterText, 'drawtext')) features.push('drawtext-filter')
+    if (hasFfmpegFilter(filterText, 'subtitles')) features.push('subtitles-filter')
+    if (hasFfmpegFilter(filterText, 'eq')) features.push('eq-filter')
+    if (hasFfmpegFilter(filterText, 'colorbalance')) features.push('colorbalance-filter')
+    if (hasFfmpegFilter(filterText, 'boxblur')) features.push('boxblur-filter')
+    if (hasFfmpegFilter(filterText, 'unsharp')) features.push('unsharp-filter')
+    if (hasFfmpegFilter(filterText, 'vignette')) features.push('vignette-filter')
+    if (hasFfmpegFilter(filterText, 'silencedetect')) features.push('silencedetect-filter')
     if (/^\s*[E.]\s+mp4(?:\s|,)/mu.test(muxerText)) features.push('mp4-muxer')
     if (/^\s*[E.]\s+mov(?:\s|,)/mu.test(muxerText)) features.push('mov-muxer')
     if (/^\s*[E.]\s+matroska(?:\s|,)/mu.test(muxerText)) features.push('matroska-muxer')
@@ -819,6 +826,12 @@ async function inspectFfmpegFeatures(
 
 function capabilityInventoryText(result: RunResult): string {
   return Buffer.concat([result.stdout, Buffer.from('\n'), result.stderr]).toString('utf8')
+}
+
+function hasFfmpegFilter(inventory: string, name: string): boolean {
+  // Filter flags are presentation metadata. Their width differs between
+  // FFmpeg builds, so use the stable filter-name column instead.
+  return new RegExp(`^\\s*(?:[A-Z.]+\\s+)?${name}(?:\\s|$)`, 'mu').test(inventory)
 }
 
 type DiscoveredExecutable = { path: string; source: 'configured' | 'path' }
@@ -893,7 +906,7 @@ function scrubbedEnvironment(pathEnv: string): NodeJS.ProcessEnv {
   }
 }
 
-async function runBoundedProcess(
+export async function runBoundedProcess(
   executable: string,
   args: string[],
   options: {

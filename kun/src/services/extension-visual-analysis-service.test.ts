@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { MediaVisualAdapterBinding } from '@kun/extension-api'
 import type { ExtensionPrincipal } from './extension-agent-service.js'
 import { ExtensionMediaHandleService } from './extension-media-handle-service.js'
-import { ExtensionMediaProcessService } from './extension-media-process-service.js'
+import { ExtensionMediaProcessService, runBoundedProcess } from './extension-media-process-service.js'
 import {
   ExtensionVisualAnalysisService,
   KUN_LOCAL_VISUAL_MODEL_DESCRIPTOR,
@@ -199,11 +199,11 @@ async function createFixture(scriptBody: string) {
   roots.push(root)
   const workspace = join(root, 'workspace')
   const dataDir = join(root, 'data')
-  const binary = join(root, 'media-tool')
+  const binary = join(root, process.platform === 'win32' ? 'media-tool.exe' : 'media-tool')
   await mkdir(workspace, { recursive: true })
   await writeFile(join(workspace, 'clip.mp4'), Buffer.from('authorized-video-fixture'))
   await writeFile(binary, `#!/usr/bin/env node\n${scriptBody}\n`)
-  await chmod(binary, 0o755)
+  if (process.platform !== 'win32') await chmod(binary, 0o755)
   const principal: ExtensionPrincipal = {
     extensionId: 'kun-examples.kun-video-editor',
     extensionVersion: '0.3.0',
@@ -222,7 +222,9 @@ async function createFixture(scriptBody: string) {
     handleService: handles,
     ffprobePath: binary,
     ffmpegPath: binary,
-    pathEnv: process.env.PATH
+    pathEnv: process.env.PATH,
+    processRunner: (_executable, args, options) =>
+      runBoundedProcess(process.execPath, [binary, ...args], options)
   })
   return {
     root,

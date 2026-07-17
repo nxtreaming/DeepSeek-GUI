@@ -7,7 +7,8 @@ import { ExtensionMediaHandleService } from './extension-media-handle-service.js
 import {
   EXTENSION_MEDIA_INPUT_FORMAT_WHITELIST,
   EXTENSION_MEDIA_INPUT_PROTOCOL_WHITELIST,
-  ExtensionMediaProcessService
+  ExtensionMediaProcessService,
+  runBoundedProcess
 } from './extension-media-process-service.js'
 import {
   ExtensionMediaFfmpegService,
@@ -26,7 +27,7 @@ async function fixture() {
   roots.push(root)
   const workspace = join(root, 'workspace')
   const dataDir = join(root, 'data')
-  const bin = join(root, 'ffmpeg')
+  const bin = join(root, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
   await mkdir(join(workspace, 'exports'), { recursive: true })
   await writeFile(join(workspace, 'clip.mp4'), Buffer.from('source-video'))
   await writeFile(bin, `#!/usr/bin/env node
@@ -39,7 +40,7 @@ const target = process.argv.at(-1)
 fs.writeFileSync(target, Buffer.from('rendered-video'))
 process.stdout.write('frame=12\\nout_time_us=1250000\\ntotal_size=14\\nspeed=2.5x\\nprogress=end\\n')
 `)
-  await chmod(bin, 0o755)
+  if (process.platform !== 'win32') await chmod(bin, 0o755)
   const principal: ExtensionPrincipal = {
     extensionId: 'acme.video',
     extensionVersion: '1.0.0',
@@ -69,10 +70,24 @@ process.stdout.write('frame=12\\nout_time_us=1250000\\ntotal_size=14\\nspeed=2.5
   const processes = new ExtensionMediaProcessService({
     handleService: handles,
     ffmpegPath: bin,
-    pathEnv: process.env.PATH
+    pathEnv: process.env.PATH,
+    processRunner: (_executable, args, options) =>
+      runBoundedProcess(process.execPath, [bin, ...args], options)
   })
   const ffmpeg = new ExtensionMediaFfmpegService({ handleService: handles, processService: processes })
-  return { root, workspace, dataDir, bin, principal, handles, input, output, ffmpeg }
+  return {
+    root,
+    workspace,
+    dataDir,
+    bin,
+    principal,
+    handles,
+    input,
+    output,
+    ffmpeg,
+    processRunner: (_executable: string, args: string[], options: Parameters<typeof runBoundedProcess>[2]) =>
+      runBoundedProcess(process.execPath, [bin, ...args], options)
+  }
 }
 
 describe('validateAndSubstituteFfmpegArguments', () => {
@@ -468,7 +483,8 @@ describe('ExtensionMediaFfmpegService', { timeout: MEDIA_PROCESS_TEST_TIMEOUT_MS
       processService: new ExtensionMediaProcessService({
         handleService: recoveredHandles,
         ffmpegPath: test.bin,
-        pathEnv: process.env.PATH
+        pathEnv: process.env.PATH,
+        processRunner: test.processRunner
       })
     })
     await recoveredFfmpeg.rollbackInterruptedTransaction(
@@ -512,7 +528,8 @@ describe('ExtensionMediaFfmpegService', { timeout: MEDIA_PROCESS_TEST_TIMEOUT_MS
       processService: new ExtensionMediaProcessService({
         handleService: recoveredHandles,
         ffmpegPath: test.bin,
-        pathEnv: process.env.PATH
+        pathEnv: process.env.PATH,
+        processRunner: test.processRunner
       })
     })
     await recoveredFfmpeg.commitRecoveredTransaction(
@@ -588,7 +605,8 @@ fs.writeFileSync(process.argv.at(-1), Buffer.alloc(2048))
     const oversizedProcesses = new ExtensionMediaProcessService({
       handleService: oversized.handles,
       ffmpegPath: oversized.bin,
-      pathEnv: process.env.PATH
+      pathEnv: process.env.PATH,
+      processRunner: oversized.processRunner
     })
     const bounded = new ExtensionMediaFfmpegService({
       handleService: oversized.handles,
@@ -606,7 +624,8 @@ fs.writeFileSync(process.argv.at(-1), Buffer.alloc(2048))
     const missingProcesses = new ExtensionMediaProcessService({
       handleService: missing.handles,
       ffmpegPath: missing.bin,
-      pathEnv: process.env.PATH
+      pathEnv: process.env.PATH,
+      processRunner: missing.processRunner
     })
     const invalid = new ExtensionMediaFfmpegService({
       handleService: missing.handles,

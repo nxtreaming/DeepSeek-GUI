@@ -10,7 +10,8 @@ import {
   ExtensionMediaProcessError,
   ExtensionMediaProcessService,
   detectBeatGridFromPcm,
-  defaultMediaDiscoveryDirectories
+  defaultMediaDiscoveryDirectories,
+  runBoundedProcess
 } from './extension-media-process-service.js'
 
 const roots: string[] = []
@@ -25,11 +26,11 @@ async function fixture(scriptBody: string) {
   roots.push(root)
   const workspace = join(root, 'workspace')
   const dataDir = join(root, 'data')
-  const bin = join(root, 'ffprobe')
+  const bin = join(root, process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe')
   await mkdir(workspace, { recursive: true })
   await writeFile(join(workspace, 'clip.mp4'), Buffer.from('video-fixture'))
   await writeFile(bin, `#!/usr/bin/env node\n${scriptBody}\n`)
-  await chmod(bin, 0o755)
+  if (process.platform !== 'win32') await chmod(bin, 0o755)
   const principal: ExtensionPrincipal = {
     extensionId: 'acme.video',
     extensionVersion: '1.0.0',
@@ -44,14 +45,35 @@ async function fixture(scriptBody: string) {
     mode: 'read',
     source: 'workspace'
   })
-  return { root, workspace, dataDir, bin: await realpath(bin), principal, handles, handle }
+  const resolvedBin = await realpath(bin)
+  return {
+    root,
+    workspace,
+    dataDir,
+    bin: resolvedBin,
+    principal,
+    handles,
+    handle,
+    processRunner: (_executable: string, args: string[], options: Parameters<typeof runBoundedProcess>[2]) =>
+      runBoundedProcess(process.execPath, [resolvedBin, ...args], options)
+  }
+}
+
+function createMediaProcessService(
+  test: Awaited<ReturnType<typeof fixture>>,
+  options: Omit<ConstructorParameters<typeof ExtensionMediaProcessService>[0], 'handleService' | 'processRunner'> = {}
+): ExtensionMediaProcessService {
+  return new ExtensionMediaProcessService({
+    handleService: test.handles,
+    processRunner: test.processRunner,
+    ...options
+  })
 }
 
 describe('ExtensionMediaProcessService', { timeout: MEDIA_PROCESS_TEST_TIMEOUT_MS }, () => {
   it('discovers a configured binary without returning its path', async () => {
     const test = await fixture(`process.stdout.write('ffprobe version 7.1-test\\n')`)
-    const service = new ExtensionMediaProcessService({
-      handleService: test.handles,
+    const service = createMediaProcessService(test, {
       ffprobePath: test.bin,
       pathEnv: process.env.PATH
     })
@@ -67,8 +89,7 @@ describe('ExtensionMediaProcessService', { timeout: MEDIA_PROCESS_TEST_TIMEOUT_M
 
   it('discovers reviewed desktop prefixes before an inherited shell PATH', async () => {
     const test = await fixture(`process.stdout.write('ffprobe version 7.1-reviewed\\n')`)
-    const service = new ExtensionMediaProcessService({
-      handleService: test.handles,
+    const service = createMediaProcessService(test, {
       pathEnv: process.env.PATH,
       discoveryDirectories: [test.root]
     })
@@ -94,8 +115,7 @@ describe('ExtensionMediaProcessService', { timeout: MEDIA_PROCESS_TEST_TIMEOUT_M
       else if (args.includes('-filters')) process.stdout.write(' T.. drawtext V->V\\n ..S subtitles V->V\\n T.. eq V->V\\n T.. colorbalance V->V\\n T.. boxblur V->V\\n T.. unsharp V->V\\n T.. vignette V->V\\n ... arbitrary ignored\\n')
       else if (args.includes('-muxers')) process.stdout.write('  E mp4 MP4\\n  E mov MOV\\n  E matroska Matroska\\n  E dangerous ignored\\n')
     `)
-    const service = new ExtensionMediaProcessService({
-      handleService: test.handles,
+    const service = createMediaProcessService(test, {
       ffmpegPath: test.bin,
       pathEnv: process.env.PATH
     })
@@ -127,16 +147,15 @@ describe('ExtensionMediaProcessService', { timeout: MEDIA_PROCESS_TEST_TIMEOUT_M
     })
   })
 
-  it('reads a successful FFmpeg filter inventory from stderr', async () => {
+  it('reads a successful FFmpeg filter inventory with variable display flags from stderr', async () => {
     const test = await fixture(`
       const args = process.argv.slice(2)
       if (args.includes('-version')) process.stdout.write('ffmpeg version 8.0-stderr-inventory\\n')
       else if (args.includes('-encoders')) process.stdout.write(' V..... libx264 H.264\\n A..... aac AAC\\n')
-      else if (args.includes('-filters')) process.stderr.write(' T.C drawtext V->V Draw text\\n')
+      else if (args.includes('-filters')) process.stderr.write(' TSC. drawtext V->V Draw text\\n')
       else if (args.includes('-muxers')) process.stdout.write('  E mp4 MP4\\n')
     `)
-    const service = new ExtensionMediaProcessService({
-      handleService: test.handles,
+    const service = createMediaProcessService(test, {
       ffmpegPath: test.bin,
       pathEnv: process.env.PATH
     })
@@ -189,8 +208,7 @@ const expected = [
 if (expected.some((value, index) => args[index] !== value) || args.length !== expected.length + 1) process.exit(22)
 process.stdout.write(${JSON.stringify(JSON.stringify(payload))})`
     const test = await fixture(script)
-    const service = new ExtensionMediaProcessService({
-      handleService: test.handles,
+    const service = createMediaProcessService(test, {
       ffprobePath: test.bin,
       pathEnv: process.env.PATH
     })
@@ -248,8 +266,7 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload))})`
       }
       const script = `process.stdout.write(${JSON.stringify(JSON.stringify(payload))})`
       const test = await fixture(script)
-      const service = new ExtensionMediaProcessService({
-        handleService: test.handles,
+      const service = createMediaProcessService(test, {
         ffprobePath: test.bin,
         pathEnv: process.env.PATH
       })
@@ -273,8 +290,7 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload))})`
 
   it('checks permission before attempting executable discovery', async () => {
     const test = await fixture(`process.exit(99)`)
-    const service = new ExtensionMediaProcessService({
-      handleService: test.handles,
+    const service = createMediaProcessService(test, {
       ffprobePath: join(test.root, 'missing')
     })
     await expect(service.probe({ ...test.principal, permissions: [] }, test.handle.id))
@@ -290,8 +306,7 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload))})`
       mode: 'read',
       source: 'workspace'
     })
-    const service = new ExtensionMediaProcessService({
-      handleService: test.handles,
+    const service = createMediaProcessService(test, {
       ffprobePath: test.bin,
       pathEnv: process.env.PATH
     })
@@ -301,8 +316,7 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload))})`
 
   it('bounds output and cancellation without exposing local paths', async () => {
     const test = await fixture(`process.stdout.write('x'.repeat(8192)); setTimeout(() => {}, 30_000)`)
-    const service = new ExtensionMediaProcessService({
-      handleService: test.handles,
+    const service = createMediaProcessService(test, {
       ffprobePath: test.bin,
       pathEnv: process.env.PATH,
       maxProbeOutputBytes: 1024
@@ -320,8 +334,7 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload))})`
 
   it('reports invalid JSON with a stable redacted error', async () => {
     const test = await fixture(`process.stdout.write('{invalid')`)
-    const service = new ExtensionMediaProcessService({
-      handleService: test.handles,
+    const service = createMediaProcessService(test, {
       ffprobePath: test.bin,
       pathEnv: process.env.PATH
     })
@@ -331,16 +344,14 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload))})`
 
   it('reports missing executables and aborts a running probe', async () => {
     const test = await fixture(`setTimeout(() => process.stdout.write('{}'), 30_000)`)
-    const missing = new ExtensionMediaProcessService({
-      handleService: test.handles,
+    const missing = createMediaProcessService(test, {
       ffprobePath: join(test.root, 'missing-ffprobe'),
       pathEnv: ''
     })
     await expect(missing.probe(test.principal, test.handle.id))
       .rejects.toMatchObject({ code: 'executable_unavailable' })
 
-    const service = new ExtensionMediaProcessService({
-      handleService: test.handles,
+    const service = createMediaProcessService(test, {
       ffprobePath: test.bin,
       pathEnv: process.env.PATH
     })
@@ -358,8 +369,7 @@ process.stdout.write(${JSON.stringify(JSON.stringify(payload))})`
       else if (args.includes('-filters')) process.stdout.write(' ... silencedetect A->A\\n')
       else if (args.includes('-muxers')) process.stdout.write('  E s16le raw PCM\\n')
     `)
-    const service = new ExtensionMediaProcessService({
-      handleService: test.handles,
+    const service = createMediaProcessService(test, {
       ffprobePath: test.bin,
       ffmpegPath: test.bin,
       pathEnv: process.env.PATH
@@ -418,8 +428,7 @@ else if (args.some((value) => value.startsWith('silencedetect='))) {
 } else process.exit(23)
 `
     const test = await fixture(script)
-    const service = new ExtensionMediaProcessService({
-      handleService: test.handles,
+    const service = createMediaProcessService(test, {
       ffprobePath: test.bin,
       ffmpegPath: test.bin,
       pathEnv: process.env.PATH
@@ -498,8 +507,7 @@ const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']
 fs.writeFileSync(process.argv.at(-1) + '.descendant-pid', String(descendant.pid))
 setInterval(() => {}, 1000)
 `)
-    const service = new ExtensionMediaProcessService({
-      handleService: test.handles,
+    const service = createMediaProcessService(test, {
       ffprobePath: test.bin,
       pathEnv: process.env.PATH
     })

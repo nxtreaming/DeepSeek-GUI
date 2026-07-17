@@ -103,6 +103,23 @@ describe('KunRuntimeProvider', () => {
     )
   })
 
+  it('rejects thread creation before the runtime request when the workspace is missing', async () => {
+    const runtimeRequest = vi.fn(async () => ({ ok: true, status: 200, body: '{}' }))
+    const alertDialog = vi.fn(async () => undefined)
+    installDsGui({
+      runtimeRequest,
+      workspaceDirectoryExists: vi.fn(async () => false),
+      alertDialog
+    })
+    const provider = new KunRuntimeProvider()
+
+    await expect(provider.createThread({ workspace: 'E:\\missing-project' }))
+      .rejects.toThrow(/working directory/i)
+
+    expect(runtimeRequest).not.toHaveBeenCalled()
+    expect(alertDialog).not.toHaveBeenCalled()
+  })
+
   it('starts MCP OAuth authorization through the authenticated runtime bridge', async () => {
     const runtimeRequest = vi.fn(async () => ({
       ok: true,
@@ -364,6 +381,45 @@ describe('KunRuntimeProvider', () => {
     )
   })
 
+  it('posts bounded extension composer context with the next Kun turn', async () => {
+    const runtimeRequest = vi.fn(async () => ({
+      ok: true,
+      status: 202,
+      body: JSON.stringify({ threadId: 'thr_1', turnId: 'turn_abc', userMessageItemId: 'item_user_real' })
+    }))
+    installDsGui({ runtimeRequest })
+    const provider = new KunRuntimeProvider()
+    const composerContext = {
+      schemaVersion: 1 as const,
+      id: 'video-selection',
+      title: 'Interview selection',
+      summary: 'Revision 4 with two selected clips',
+      reference: { projectId: 'project-1', selectedItemIds: ['clip-1'] },
+      revision: 4,
+      generation: 7,
+      attachmentId: `extension-context:${'a'.repeat(64)}`,
+      provenance: {
+        extensionId: 'acme.video-editor',
+        extensionVersion: '1.1.0',
+        viewContributionId: 'extension:acme.video-editor/editor',
+        workspaceId: 'b'.repeat(64)
+      }
+    }
+    await provider.sendUserMessage('thr_1', 'Use the selection', {
+      composerContexts: [composerContext]
+    })
+    expect(runtimeRequest).toHaveBeenCalledWith(
+      '/v1/threads/thr_1/turns',
+      'POST',
+      JSON.stringify({
+        prompt: 'Use the selection',
+        approvalPolicy: 'on-request',
+        sandboxMode: 'workspace-write',
+        composerContexts: [composerContext]
+      })
+    )
+  })
+
   it('posts GUI design canvas turn metadata when provided', async () => {
     const runtimeRequest = vi.fn(async () => ({
       ok: true,
@@ -593,6 +649,32 @@ describe('KunRuntimeProvider', () => {
       '/v1/threads/thr_1/turns/turn_1/interrupt',
       'POST',
       JSON.stringify({ discard: true })
+    )
+  })
+
+  it('posts mid-turn guidance with its user-facing display text', async () => {
+    const runtimeRequest = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body: '{}'
+    }))
+    installDsGui({ runtimeRequest })
+    const provider = new KunRuntimeProvider()
+
+    await provider.steerUserMessage(
+      'thr_1',
+      'turn_1',
+      'use the compact logo instead',
+      { displayText: 'Use the compact logo instead' }
+    )
+
+    expect(runtimeRequest).toHaveBeenCalledWith(
+      '/v1/threads/thr_1/turns/turn_1/steer',
+      'POST',
+      JSON.stringify({
+        text: 'use the compact logo instead',
+        displayText: 'Use the compact logo instead'
+      })
     )
   })
 

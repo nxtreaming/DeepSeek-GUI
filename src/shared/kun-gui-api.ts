@@ -66,6 +66,20 @@ import type {
   WorkspaceFileWritePayload,
   WorkspaceFileWriteResult
 } from './workspace-file'
+
+export type ExtensionArtifactActionPayload = {
+  artifactId: string
+  ownerExtensionId: string
+  ownerExtensionVersion: string
+  workspaceId: string
+  workspaceRoot: string
+  action: 'open' | 'reveal'
+}
+
+export type ExtensionArtifactActionResult = {
+  ok: boolean
+  message?: string
+}
 import type { ProjectDesignMdOfficialLintResult } from './project-design-md'
 import type {
   WriteInlineCompletionDebugEntry,
@@ -92,6 +106,7 @@ import type {
 import type {
   UiPluginListItem,
   UiPluginManifestV1,
+  UiPluginRuntimeBackgrounds,
   UiPluginRuntimeFigures
 } from './ui-plugin'
 import type {
@@ -119,6 +134,20 @@ import type {
   TerminalWritePayload
 } from './terminal'
 import type { ExtensionIpcApi } from './extension-ipc'
+import type {
+  DataMigrationEstimate,
+  DataMigrationExportOptions,
+  DataMigrationImportOptions,
+  DataMigrationImportPlan,
+  DataMigrationInspectionSummary,
+  DataMigrationOperationStatus,
+  DataMigrationPathPickResult,
+  DataMigrationProgress,
+  DataMigrationRendererRequest,
+  DataMigrationRendererResponse,
+  DataMigrationReport,
+  DataMigrationWorkspaceConflictStrategy
+} from './data-migration'
 
 export type KunRuntimeStatusPayload = {
   state: 'starting' | 'running' | 'restarting' | 'crashed' | 'failed' | 'stopped'
@@ -191,7 +220,22 @@ export type UiPluginInstallIpcResult =
   | { canceled: false; ok: true; plugin: UiPluginListItem }
   | { canceled: false; ok: false; errors: string[] }
 export type UiPluginLoadIpcResult =
-  | { ok: true; manifest: UiPluginManifestV1; figures: UiPluginRuntimeFigures }
+  | {
+      ok: true
+      manifest: UiPluginManifestV1
+      figures: UiPluginRuntimeFigures
+      backgrounds: UiPluginRuntimeBackgrounds
+    }
+  | { ok: false; error: string }
+export type UiPluginThemeActivateIpcResult =
+  | {
+      ok: true
+      manifest: UiPluginManifestV1
+      figures: UiPluginRuntimeFigures
+    }
+  | { ok: false; error: string }
+export type UiPluginThemeDeactivateIpcResult =
+  | { ok: true }
   | { ok: false; error: string }
 export type DeepseekConfigFileResult = { path: string; content: string; exists: boolean }
 export type DeepseekConfigSaveResult = { ok: true; path: string }
@@ -275,6 +319,11 @@ export type ConfirmDialogOptions = {
   confirmLabel?: string
   cancelLabel?: string
 }
+export type AlertDialogOptions = {
+  message: string
+  detail?: string
+  buttonLabel?: string
+}
 /** Which legacy install a set of importable conversations came from. */
 export type LegacySessionSourceKind = 'kun' | 'coreagent' | 'custom'
 export type LegacySessionDetectedSource = {
@@ -349,6 +398,34 @@ export type SdkDownloadState = {
 export type KunGuiApi = ExtensionIpcApi & {
   platform: string
   homeDir: string
+  dataMigration: {
+    pickExportPackage: (defaultPath?: string) => Promise<DataMigrationPathPickResult>
+    pickImportPackage: (defaultPath?: string) => Promise<DataMigrationPathPickResult>
+    pickDestinationDirectory: (defaultPath?: string) => Promise<DataMigrationPathPickResult>
+    estimateExport: (input: Pick<DataMigrationExportOptions,
+      'operationId' | 'selectedWorkspaceIds' | 'preset' | 'sensitiveContentAcknowledged'
+    >) => Promise<DataMigrationEstimate>
+    inspectPackage: (input: { packagePath: string; passphrase?: string }) => Promise<DataMigrationInspectionSummary>
+    planImport: (input: {
+      operationId: string
+      inspectionId: string
+      destinationBaseRoot: string
+      destinationRoots?: Record<string, string>
+      strategies?: Record<string, DataMigrationWorkspaceConflictStrategy>
+      skippedWorkspaceIds?: string[]
+    }) => Promise<DataMigrationImportPlan>
+    startExport: (input: DataMigrationExportOptions) => Promise<{ packagePath: string; report: DataMigrationReport }>
+    startImport: (input: DataMigrationImportOptions) => Promise<{ report: DataMigrationReport; refreshRequired: boolean }>
+    cancel: (operationId: string) => Promise<DataMigrationOperationStatus>
+    recover: (operationId: string, action: 'resume' | 'rollback') => Promise<DataMigrationOperationStatus>
+    getStatus: () => Promise<DataMigrationOperationStatus>
+    listReports: () => Promise<DataMigrationReport[]>
+    getReport: (operationId: string) => Promise<DataMigrationReport>
+    deleteReport: (operationId: string) => Promise<void>
+    onProgress: (handler: (progress: DataMigrationProgress) => void) => () => void
+    onRendererRequest: (handler: (request: DataMigrationRendererRequest) => void) => () => void
+    respondRendererRequest: (response: DataMigrationRendererResponse) => Promise<void>
+  }
   getSettings: () => Promise<AppSettingsV1>
   /** Detect an existing local Claude Code login (subscription auth). */
   claudeSubscriptionStatus: () => Promise<ClaudeSubscriptionStatus>
@@ -401,9 +478,11 @@ export type KunGuiApi = ExtensionIpcApi & {
   pollCodexAuth: (deviceCode: string, userCode: string) => Promise<CodexAuthPollResult>
   startCodexBrowserAuth: () => Promise<CodexBrowserAuthResult>
   pickWorkspaceDirectory: (defaultPath?: string) => Promise<WorkspacePickResult>
+  workspaceDirectoryExists: (workspaceRoot: string) => Promise<boolean>
   pickLocalFiles: (defaultPath?: string) => Promise<LocalFilesPickResult>
   /** 在对话工作目录根下创建一个时间戳子目录作为新对话的工作目录。 */
   createConversationWorkspace: (root?: string) => Promise<ConversationWorkspaceCreateResult>
+  alertDialog: (options: AlertDialogOptions) => Promise<void>
   confirmDialog: (options: ConfirmDialogOptions) => Promise<boolean>
   /** Detect importable conversations from a previous DeepSeek GUI install. */
   detectLegacySessions: () => Promise<LegacySessionDetectResult>
@@ -427,6 +506,8 @@ export type KunGuiApi = ExtensionIpcApi & {
   installUiPlugin: () => Promise<UiPluginInstallIpcResult>
   removeUiPlugin: (id: string) => Promise<{ ok: boolean }>
   loadUiPlugin: (id: string) => Promise<UiPluginLoadIpcResult>
+  activateUiPluginTheme: (id: string) => Promise<UiPluginThemeActivateIpcResult>
+  deactivateUiPluginTheme: () => Promise<UiPluginThemeDeactivateIpcResult>
   getKunConfigFile: () => Promise<DeepseekConfigFileResult>
   setKunConfigFile: (content: string) => Promise<DeepseekConfigSaveResult>
   openKunConfigDir: () => Promise<PathOpenResult>
@@ -495,6 +576,9 @@ export type KunGuiApi = ExtensionIpcApi & {
   readWorkspacePdf: (options: WorkspaceFileTarget) => Promise<WorkspacePdfReadResult>
   readLocalPdfText: (options: LocalPdfTextTarget) => Promise<LocalPdfTextReadResult>
   saveWorkspaceFileAs: (payload: WorkspaceFileSaveAsPayload) => Promise<WorkspaceFileSaveAsResult>
+  openExtensionArtifact: (
+    payload: ExtensionArtifactActionPayload
+  ) => Promise<ExtensionArtifactActionResult>
   writeWorkspaceFile: (payload: WorkspaceFileWritePayload) => Promise<WorkspaceFileWriteResult>
   createWorkspaceFile: (payload: WorkspaceFileCreatePayload) => Promise<WorkspaceFileCreateResult>
   createWorkspaceDirectory: (

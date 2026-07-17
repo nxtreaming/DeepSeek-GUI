@@ -719,6 +719,132 @@ describe('createAgentSdkRuntime turn context', () => {
     expect(immediatelyAllowed).toBe(true)
   })
 
+  test('aborts while approval_requested persistence is blocked and records one expired resolution', async () => {
+    type ApprovalEvent = { kind: string; approvalId?: string; status?: string; reason?: string }
+    const approvalGate = new InMemoryApprovalGate()
+    const calls: ApprovalEvent[] = []
+    const persisted: ApprovalEvent[] = []
+    let releaseRequested!: () => void
+    const requestedBarrier = new Promise<void>((resolve) => {
+      releaseRequested = resolve
+    })
+    const runtime = createAgentSdkRuntime({
+      registry: {} as never,
+      turns: {} as never,
+      sessionStore: {} as never,
+      threadStore: { get: async () => threadWith({ approvalPolicy: 'always' }) } as never,
+      events: {
+        record: async (event: ApprovalEvent) => {
+          calls.push(event)
+          if (event.kind === 'approval_requested') await requestedBarrier
+          persisted.push(event)
+        }
+      } as never,
+      ids: { next: (prefix) => `${prefix}_1` },
+      prefix: { systemPrompt: '' },
+      providerConfigs: {},
+      agentSdkProviderIds: new Set(),
+      defaultApprovalPolicy: 'auto',
+      approvalGate
+    })
+    const deps = (runtime as unknown as {
+      deps: {
+        decideToolApproval(
+          threadId: string,
+          turnId: string,
+          toolName: string,
+          input: Record<string, unknown>,
+          signal?: AbortSignal
+        ): Promise<{ allow: boolean }>
+      }
+    }).deps
+    const controller = new AbortController()
+
+    const waiting = deps.decideToolApproval('th', 'tn', 'Bash', { command: 'pwd' }, controller.signal)
+    await vi.waitFor(() => {
+      expect(calls).toContainEqual(expect.objectContaining({ kind: 'approval_requested' }))
+      expect(approvalGate.pending('th')).toHaveLength(1)
+    })
+    const approval = approvalGate.pending('th')[0]
+    if (!approval) throw new Error('expected a pending SDK approval')
+
+    controller.abort()
+
+    await expect(waiting).resolves.toMatchObject({ allow: false })
+    expect(approvalGate.get(approval.id)).toMatchObject({
+      status: 'expired',
+      reason: 'turn aborted while awaiting approval'
+    })
+    expect(persisted).toEqual([])
+
+    releaseRequested()
+    await vi.waitFor(() => {
+      expect(persisted.map((event) => event.kind)).toEqual([
+        'approval_requested',
+        'approval_resolved'
+      ])
+    })
+    expect(persisted.filter((event) => event.kind === 'approval_resolved')).toEqual([
+      expect.objectContaining({
+        approvalId: approval.id,
+        status: 'expired',
+        reason: 'turn aborted while awaiting approval'
+      })
+    ])
+  })
+
+  test('consumes a delayed approval_requested failure after abort without publishing an orphan resolution', async () => {
+    type ApprovalEvent = { kind: string; approvalId?: string; status?: string }
+    const approvalGate = new InMemoryApprovalGate()
+    const calls: ApprovalEvent[] = []
+    let rejectRequested!: (error: Error) => void
+    const requestedFailure = new Promise<never>((_resolve, reject) => {
+      rejectRequested = reject
+    })
+    const runtime = createAgentSdkRuntime({
+      registry: {} as never,
+      turns: {} as never,
+      sessionStore: {} as never,
+      threadStore: { get: async () => threadWith({ approvalPolicy: 'always' }) } as never,
+      events: {
+        record: async (event: ApprovalEvent) => {
+          calls.push(event)
+          if (event.kind === 'approval_requested') await requestedFailure
+        }
+      } as never,
+      ids: { next: (prefix) => `${prefix}_1` },
+      prefix: { systemPrompt: '' },
+      providerConfigs: {},
+      agentSdkProviderIds: new Set(),
+      defaultApprovalPolicy: 'auto',
+      approvalGate
+    })
+    const deps = (runtime as unknown as {
+      deps: {
+        decideToolApproval(
+          threadId: string,
+          turnId: string,
+          toolName: string,
+          input: Record<string, unknown>,
+          signal?: AbortSignal
+        ): Promise<{ allow: boolean }>
+      }
+    }).deps
+    const controller = new AbortController()
+
+    const waiting = deps.decideToolApproval('th', 'tn', 'Bash', { command: 'pwd' }, controller.signal)
+    await vi.waitFor(() => {
+      expect(calls).toContainEqual(expect.objectContaining({ kind: 'approval_requested' }))
+    })
+    controller.abort()
+    await expect(waiting).resolves.toMatchObject({ allow: false })
+
+    rejectRequested(new Error('approval request persistence failed'))
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+    expect(calls.filter((event) => event.kind === 'approval_resolved')).toEqual([])
+  })
+
   test('denies SDK built-in tools under a thread never policy', async () => {
     const runtime = createAgentSdkRuntime({
       registry: {} as never,

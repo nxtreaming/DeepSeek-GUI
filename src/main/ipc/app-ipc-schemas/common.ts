@@ -46,6 +46,14 @@ export const confirmDialogPayloadSchema = z
   })
   .strict()
 
+export const alertDialogPayloadSchema = z
+  .object({
+    message: trimmedString(4_000),
+    detail: z.string().max(8_000).optional(),
+    buttonLabel: z.string().trim().max(200).optional()
+  })
+  .strict()
+
 export const legacySessionImportPayloadSchema = z
   .object({
     sourceDir: defaultPathSchema

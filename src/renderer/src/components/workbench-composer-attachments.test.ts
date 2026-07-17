@@ -3,6 +3,7 @@ import type { AttachmentReference } from '../agent/types'
 import {
   composerAttachmentScopeForSurface,
   createEmptyComposerAttachmentsByScope,
+  removeComposerAttachmentsById,
   updateComposerAttachmentsByScope
 } from './workbench-composer-attachments'
 import { BUILTIN_RIGHT_PANEL_IDS } from '../extensions/contribution-ids'
@@ -32,5 +33,13 @@ describe('workbench composer attachment scopes', () => {
     expect(withDesignImage.design.map((attachment) => attachment.id)).toEqual(['design-canvas'])
     expect(withDesignImage.write).toEqual([])
     expect(withDesignImage.sdd).toEqual([])
+  })
+
+  it('removes only captured attachment ids and preserves later additions', () => {
+    const attachments = [image('sent'), image('added-while-sending')]
+
+    expect(removeComposerAttachmentsById(attachments, ['sent'])).toEqual([
+      image('added-while-sending')
+    ])
   })
 })

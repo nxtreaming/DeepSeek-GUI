@@ -274,7 +274,7 @@ export function useWorkbenchNavigationController({
     const writeWorkspaceRoot = writeState.workspaceRoot || workspaceRoot
     setInput('')
     writeState.clearQuotedSelections()
-    void createWriteThread(writeWorkspaceRoot)
+    void createWriteThread(writeWorkspaceRoot, writeState.activeFilePath ?? undefined)
   }, [createWriteThread, setInput, workspaceRoot])
 
   const pickWriteAssistantWorkspace = useCallback(async (): Promise<void> => {

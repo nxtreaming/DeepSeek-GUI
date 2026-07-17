@@ -5,6 +5,7 @@ import {
   evaluateReplayBudget,
   evaluateReplayQuality,
   formatReplayReportMarkdown,
+  replaySuiteDefinitionHash,
   ReplaySuiteSchema,
   runReplaySuite,
   SseMessageDecoder,
@@ -171,6 +172,227 @@ describe('replay benchmark', () => {
       expect.stringContaining('total latency'),
       expect.stringContaining('cache hit rate')
     ]))
+  })
+
+  it('uses per-model comparison tolerances without changing global defaults', () => {
+    const baseline = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-28T00:00:00.000Z')
+    const current = report([replayRun('passed', 450, 1_900, 0.8)], '2026-06-29T00:00:00.000Z')
+    current.runtime.model = 'local-model'
+
+    const comparison = compareReplayReports(current, baseline, {
+      allowModelChange: true,
+      defaults: {
+        maxSuccessRateDrop: 0.2,
+        maxCacheHitRateDrop: 0.25
+      },
+      models: {
+        'local-model': {
+          maxTtftRelativeIncrease: 5,
+          maxTotalRelativeIncrease: 5
+        }
+      }
+    })
+
+    expect(comparison.model).toBe('local-model')
+    expect(comparison.policy.maxTtftRelativeIncrease).toBe(5)
+    expect(comparison.policy.maxSuccessRateDrop).toBe(0.2)
+    expect(comparison.policy.maxCacheHitRateDrop).toBe(0.25)
+    expect(comparison.regressions).not.toEqual(expect.arrayContaining([
+      expect.stringContaining('TTFT'),
+      expect.stringContaining('total latency')
+    ]))
+  })
+
+  it('applies comparison policies to each effective model in a mixed-model suite', () => {
+    const baselineFast = replayRun('passed', 100, 1_000, 0.8)
+    Object.assign(baselineFast, { id: 'fast#1', taskId: 'fast', model: 'fast-model' })
+    const baselineAccurate = replayRun('passed', 100, 1_000, 0.8)
+    Object.assign(baselineAccurate, { id: 'accurate#1', taskId: 'accurate', model: 'accurate-model' })
+    const currentFast = replayRun('passed', 450, 1_900, 0.8)
+    Object.assign(currentFast, { id: 'fast#1', taskId: 'fast', model: 'fast-model' })
+    const currentAccurate = replayRun('passed', 500, 2_000, 0.8)
+    Object.assign(currentAccurate, { id: 'accurate#1', taskId: 'accurate', model: 'accurate-model' })
+
+    const baseline = report([baselineFast, baselineAccurate], '2026-06-28T00:00:00.000Z')
+    const current = report([currentFast, currentAccurate], '2026-06-29T00:00:00.000Z')
+    const comparison = compareReplayReports(current, baseline, {
+      models: {
+        'fast-model': {
+          maxTtftRelativeIncrease: 5,
+          maxTotalRelativeIncrease: 5
+        }
+      }
+    })
+
+    expect(comparison.model).toBeUndefined()
+    expect(comparison.modelComparisons.map((entry) => entry.model)).toEqual([
+      'accurate-model',
+      'fast-model'
+    ])
+    expect(comparison.regressions).toEqual(expect.arrayContaining([
+      expect.stringContaining('[model accurate-model] TTFT'),
+      expect.stringContaining('[model accurate-model] total latency')
+    ]))
+    expect(comparison.regressions).not.toEqual(expect.arrayContaining([
+      expect.stringContaining('[model fast-model]')
+    ]))
+  })
+
+  it('supports explicit token and memory regression thresholds', () => {
+    const baseline = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-28T00:00:00.000Z')
+    const current = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-29T00:00:00.000Z')
+    baseline.summary.promptTokens = 1_000
+    current.summary.promptTokens = 1_500
+    baseline.summary.peakRssBytes = 100_000
+    current.summary.peakRssBytes = 200_000
+
+    const comparison = compareReplayReports(current, baseline, {
+      defaults: {
+        maxPromptTokensRelativeIncrease: 0.1,
+        maxPromptTokensAbsoluteIncrease: 100,
+        maxPeakRssRelativeIncrease: 0.1,
+        maxPeakRssAbsoluteIncreaseBytes: 10_000
+      }
+    })
+
+    expect(comparison.regressions).toEqual(expect.arrayContaining([
+      expect.stringContaining('prompt tokens'),
+      expect.stringContaining('peak RSS')
+    ]))
+  })
+
+  it('evaluates process peak RSS only through suite defaults', () => {
+    const baseline = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-28T00:00:00.000Z')
+    const current = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-29T00:00:00.000Z')
+    baseline.runtime.model = 'local-model'
+    current.runtime.model = 'local-model'
+    baseline.summary.peakRssBytes = 100
+    current.summary.peakRssBytes = 1_000
+
+    const comparison = compareReplayReports(current, baseline, {
+      defaults: { maxPeakRssAbsoluteIncreaseBytes: 100 }
+    })
+
+    expect(comparison.regressions).toEqual(expect.arrayContaining([
+      expect.stringContaining('peak RSS')
+    ]))
+    expect(comparison.modelComparisons[0]).not.toHaveProperty('peakRssBytesDelta')
+    expect(() => compareReplayReports(current, baseline, {
+      models: {
+        'local-model': { maxPeakRssAbsoluteIncreaseBytes: 1 }
+      }
+    })).toThrow()
+  })
+
+  it('enforces absolute token and memory thresholds when the baseline is zero', () => {
+    const baseline = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-28T00:00:00.000Z')
+    const current = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-29T00:00:00.000Z')
+    baseline.summary.promptTokens = 0
+    current.summary.promptTokens = 150
+    baseline.summary.peakRssBytes = 0
+    current.summary.peakRssBytes = 20_000
+
+    const comparison = compareReplayReports(current, baseline, {
+      defaults: {
+        maxPromptTokensAbsoluteIncrease: 100,
+        maxPeakRssAbsoluteIncreaseBytes: 10_000
+      }
+    })
+
+    expect(comparison.regressions).toEqual(expect.arrayContaining([
+      expect.stringContaining('prompt tokens'),
+      expect.stringContaining('peak RSS')
+    ]))
+  })
+
+  it('treats a positive increase from zero as a relative regression', () => {
+    const baseline = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-28T00:00:00.000Z')
+    const current = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-29T00:00:00.000Z')
+    baseline.summary.promptTokens = 0
+    current.summary.promptTokens = 10
+    baseline.summary.costUsd = 0
+    current.summary.costUsd = 0.01
+
+    const comparison = compareReplayReports(current, baseline, {
+      defaults: { maxPromptTokensRelativeIncrease: 0 }
+    })
+
+    expect(comparison.regressions).toEqual(expect.arrayContaining([
+      expect.stringContaining('prompt tokens'),
+      expect.stringContaining('cost increased')
+    ]))
+  })
+
+  it('rejects an incompatible baseline unless model changes are explicit', () => {
+    const baseline = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-28T00:00:00.000Z')
+    const current = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-29T00:00:00.000Z')
+    baseline.runtime.model = 'model-a'
+    current.runtime.model = 'model-b'
+
+    expect(() => compareReplayReports(current, baseline)).toThrow('runtime model')
+    expect(() => compareReplayReports(current, baseline, {
+      allowModelChange: true
+    })).not.toThrow()
+
+    current.suite.taskCount += 1
+    expect(() => compareReplayReports(current, baseline, {
+      allowModelChange: true
+    })).toThrow('task count')
+  })
+
+  it('rejects comparisons recorded with different concurrency', () => {
+    const baseline = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-28T00:00:00.000Z')
+    const current = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-29T00:00:00.000Z')
+    baseline.suite.concurrency = 1
+    current.suite.concurrency = 2
+
+    expect(() => compareReplayReports(current, baseline)).toThrow('concurrency')
+  })
+
+  it('rejects comparisons recorded with different thread retention', () => {
+    const baseline = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-28T00:00:00.000Z')
+    const current = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-29T00:00:00.000Z')
+    baseline.suite.keepThreads = false
+    current.suite.keepThreads = true
+
+    expect(() => compareReplayReports(current, baseline)).toThrow('thread retention')
+  })
+
+  it('rejects reports whose normalized suite definitions differ', () => {
+    const baseline = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-28T00:00:00.000Z')
+    const current = report([replayRun('passed', 100, 1_000, 0.8)], '2026-06-29T00:00:00.000Z')
+    baseline.suite.definitionHash = 'a'.repeat(64)
+    current.suite.definitionHash = 'b'.repeat(64)
+
+    expect(() => compareReplayReports(current, baseline)).toThrow('suite definition')
+  })
+
+  it('fingerprints semantic suite inputs while leaving model changes to policy', () => {
+    const baseline = ReplaySuiteSchema.parse({
+      version: 1,
+      name: 'fingerprint',
+      defaults: { model: 'model-a', timeoutMs: 1_000 },
+      tasks: [{ id: 'task', prompt: 'same prompt', model: 'task-model-a' }]
+    })
+    const modelChanged = ReplaySuiteSchema.parse({
+      version: 1,
+      name: 'fingerprint',
+      defaults: { model: 'model-b', timeoutMs: 1_000 },
+      tasks: [{ id: 'task', prompt: 'same prompt', model: 'task-model-b' }]
+    })
+    const promptChanged = ReplaySuiteSchema.parse({
+      version: 1,
+      name: 'fingerprint',
+      defaults: { model: 'model-b', timeoutMs: 1_000 },
+      tasks: [{ id: 'task', prompt: 'changed prompt', model: 'task-model-b' }]
+    })
+
+    expect(replaySuiteDefinitionHash(baseline, baseline.tasks)).toBe(
+      replaySuiteDefinitionHash(modelChanged, modelChanged.tasks)
+    )
+    expect(replaySuiteDefinitionHash(baseline, baseline.tasks)).not.toBe(
+      replaySuiteDefinitionHash(promptChanged, promptChanged.tasks)
+    )
   })
 
   it('evaluates explicit replay budget gates', () => {
@@ -369,6 +591,7 @@ describe('replay benchmark', () => {
     })
 
     expect(report.runs[0]?.status).toBe('failed')
+    expect(report.suite.definitionHash).toMatch(/^[0-9a-f]{64}$/)
     expect(report.runs[0]?.failureReasons).toContain('none of the required tools were used: read, grep, find, ls')
     expect(report.runs[0]?.failureReasons).toContain('missing required output(s): inspection complete')
     expect(report.runs[0]?.quality?.passed).toBe(false)

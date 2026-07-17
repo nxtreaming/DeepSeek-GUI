@@ -3,6 +3,7 @@ import type { WorkspaceFileWritePayload, WorkspaceFileWriteResult } from '@share
 type WriteWorkspaceFile = (payload: WorkspaceFileWritePayload) => Promise<WorkspaceFileWriteResult>
 
 const saveQueues = new Map<string, Promise<unknown>>()
+const pendingSaveContents = new Map<string, Map<string, number>>()
 
 function normalizedKeyPart(value: string): string {
   return value.trim().replaceAll('\\', '/').replace(/\/+$/, '')
@@ -38,11 +39,38 @@ export function enqueueWriteWorkspaceSave(
   payload: WorkspaceFileWritePayload,
   writeWorkspaceFile: WriteWorkspaceFile = window.kunGui.writeWorkspaceFile
 ): Promise<WorkspaceFileWriteResult> {
-  return enqueueWriteWorkspaceFileTask(
+  const key = writeSaveQueueKey(payload.workspaceRoot ?? '', payload.path)
+  const contents = pendingSaveContents.get(key) ?? new Map<string, number>()
+  contents.set(payload.content, (contents.get(payload.content) ?? 0) + 1)
+  pendingSaveContents.set(key, contents)
+
+  const task = enqueueWriteWorkspaceFileTask(
     payload.workspaceRoot ?? '',
     payload.path,
     () => writeWorkspaceFile(payload)
   )
+  void task.finally(() => {
+    const current = pendingSaveContents.get(key)
+    const count = current?.get(payload.content) ?? 0
+    if (!current || count <= 0) return
+    if (count === 1) current.delete(payload.content)
+    else current.set(payload.content, count - 1)
+    if (current.size === 0) pendingSaveContents.delete(key)
+  }).catch(() => undefined)
+  return task
+}
+
+/**
+ * Reports whether a watcher snapshot matches a local save that is queued or
+ * currently in flight. Callers use this to suppress local filesystem echoes
+ * without treating a genuine external edit as an assistant diff.
+ */
+export function isWriteWorkspaceSaveContentPending(
+  workspaceRoot: string,
+  path: string,
+  content: string
+): boolean {
+  return (pendingSaveContents.get(writeSaveQueueKey(workspaceRoot, path))?.get(content) ?? 0) > 0
 }
 
 export async function flushWriteWorkspaceSaveQueue(
@@ -58,4 +86,5 @@ export async function flushWriteWorkspaceSaveQueue(
 
 export function clearWriteWorkspaceSaveQueueForTests(): void {
   saveQueues.clear()
+  pendingSaveContents.clear()
 }

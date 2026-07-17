@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises'
+import { stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   DEFAULT_SCHEDULE_MODEL,
@@ -362,7 +362,13 @@ export async function runPromptViaRuntime(
   options.signal?.throwIfAborted()
   const workspace = options.workspaceRoot.trim()
   if (workspace) {
-    await mkdir(workspace, { recursive: true })
+    try {
+      if (!(await stat(workspace)).isDirectory()) {
+        return { ok: false, message: `Workspace is not a directory: ${workspace}` }
+      }
+    } catch {
+      return { ok: false, message: `Workspace directory is unavailable: ${workspace}` }
+    }
   }
   const model = normalizeTaskModel(options.model) ?? (settings.agents.kun.model.trim() || DEFAULT_SCHEDULE_MODEL)
   const providerId = options.providerId?.trim()

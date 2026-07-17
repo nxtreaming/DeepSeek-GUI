@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   WORKFLOW_NODE_KINDS,
   defaultClawSettings,
@@ -67,6 +67,7 @@ vi.mock('../../kun/src/adapters/tool/image-gen-tool-provider.js', () => ({
 
 const NOW = '2026-06-19T00:00:00.000Z'
 const PYTHON_OK = spawnSync('python3', ['-c', 'pass']).status === 0
+let workflowWorkspaceRoot = ''
 
 // ---------------------------------------------------------------------------
 // Loose builders — the runtime normalizes raw input, so tests pass partial
@@ -123,7 +124,7 @@ function buildSettings(
     chatContentMaxWidthPx: 896,
     provider: defaultModelProviderSettings(),
     agents: { kun: { ...defaultKunRuntimeSettings(), model: 'test-model', apiKey: 'test-key' } },
-    workspaceRoot: '/tmp/workflow-workspace',
+    workspaceRoot: workflowWorkspaceRoot,
     conversationWorkspaceRoot: '~/Documents/Kun',
     log: { enabled: true, retentionDays: 7 },
     checkpointCleanup: { enabled: false, intervalDays: 3 },
@@ -271,8 +272,16 @@ const FIELD = (over: Record<string, unknown>): Record<string, unknown> => ({
   ...over
 })
 
+beforeEach(() => {
+  workflowWorkspaceRoot = mkdtempSync(join(tmpdir(), 'kun-workflow-nodes-'))
+})
+
 afterEach(() => {
   vi.unstubAllGlobals()
+  if (workflowWorkspaceRoot) {
+    rmSync(workflowWorkspaceRoot, { recursive: true, force: true })
+    workflowWorkspaceRoot = ''
+  }
 })
 
 // ===========================================================================
@@ -440,6 +449,7 @@ describe('ai-agent', () => {
 
   it('passes the working directory in as a run parameter ({{json.dir}})', async () => {
     const rr = aiRuntimeRequest('ok')
+    const customWorkspaceRoot = mkdtempSync(join(workflowWorkspaceRoot, 'custom-'))
     const store = createStore(
       buildSettings([
         wf({
@@ -459,9 +469,9 @@ describe('ai-agent', () => {
     )
     const runtime = createWorkflowRuntime({ store: store as never, runtimeRequest: rr as never, logError: vi.fn() })
     try {
-      const result = await runtime.runWorkflowByRef('WS', { dir: '/tmp/custom-dir' })
+      const result = await runtime.runWorkflowByRef('WS', { dir: customWorkspaceRoot })
       expect(result.ok).toBe(true)
-      expect(threadWorkspace(rr)).toBe('/tmp/custom-dir')
+      expect(threadWorkspace(rr)).toBe(customWorkspaceRoot)
     } finally {
       runtime.stop()
     }

@@ -5,6 +5,7 @@ import type { RuntimeEvent } from '../contracts/events.js'
 import type { UsageSnapshot } from '../contracts/usage.js'
 import type { ObservabilityConfig } from '../config/kun-config.js'
 import type { RuntimeEventObserver } from '../services/runtime-event-recorder.js'
+import { OtlpHttpJsonAgentObservabilitySink } from './otlp-http-json-sink.js'
 
 export type AgentObservabilityAttributeValue = string | number | boolean | string[]
 
@@ -32,6 +33,7 @@ export type AgentObservabilitySpan = {
 
 export type AgentObservabilitySink = {
   emit(span: AgentObservabilitySpan): Promise<void> | void
+  shutdown?(): Promise<void> | void
 }
 
 type PendingSpan = {
@@ -71,7 +73,10 @@ export class AgentObservabilityRecorder implements RuntimeEventObserver {
   private readonly turns = new Map<string, PendingSpan>()
   private readonly tools = new Map<string, PendingSpan>()
 
-  constructor(private readonly sink: AgentObservabilitySink) {}
+  constructor(
+    private readonly sink: AgentObservabilitySink,
+    private readonly options: { includeSensitiveContent?: boolean } = {}
+  ) {}
 
   async record(event: RuntimeEvent): Promise<void> {
     switch (event.kind) {
@@ -112,8 +117,8 @@ export class AgentObservabilityRecorder implements RuntimeEventObserver {
         return
       case 'error':
         this.addTurnEvent(event.threadId, event.turnId, 'exception', {
-          'exception.message': event.message,
-          ...(event.code ? { 'exception.type': event.code } : {}),
+          'exception.type': event.code ?? 'runtime_error',
+          ...(this.options.includeSensitiveContent ? { 'exception.message': event.message } : {}),
           ...(event.severity ? { 'kun.error.severity': event.severity } : {})
         }, event.timestamp)
         return
@@ -129,6 +134,11 @@ export class AgentObservabilityRecorder implements RuntimeEventObserver {
     for (const key of [...this.tools.keys()]) {
       if (key.startsWith(threadId + ':')) this.tools.delete(key)
     }
+  }
+
+  /** Flush queued exporters after active turns have been settled. */
+  async shutdown(): Promise<void> {
+    await this.sink.shutdown?.()
   }
 
   private startTurn(event: RuntimeEvent): void {
@@ -213,9 +223,10 @@ export class AgentObservabilityRecorder implements RuntimeEventObserver {
     if (!event.turnId) return
     const key = turnKey(event.threadId, event.turnId)
     const span = this.turns.get(key)
-    await this.finishDanglingToolSpans(event.threadId, event.turnId, event.timestamp, code === 'OK' ? 'UNSET' : 'ERROR', message)
+    const safeMessage = this.options.includeSensitiveContent ? message : undefined
+    await this.finishDanglingToolSpans(event.threadId, event.turnId, event.timestamp, code === 'OK' ? 'UNSET' : 'ERROR', safeMessage)
     if (!span) return
-    await this.emitSpan(span, event.timestamp, code, message)
+    await this.emitSpan(span, event.timestamp, code, safeMessage)
     this.turns.delete(key)
   }
 
@@ -279,10 +290,22 @@ export function createAgentObservabilityRecorder(input: {
   dataDir: string
 }): AgentObservabilityRecorder | undefined {
   if (!input.config?.enabled) return undefined
+  if (input.config.exporter === 'otlp-http-json') {
+    return new AgentObservabilityRecorder(new OtlpHttpJsonAgentObservabilitySink({
+      endpoint: input.config.endpoint,
+      headers: input.config.headers,
+      timeoutMs: input.config.timeoutMs,
+      batchSize: input.config.batchSize,
+      maxQueueSize: input.config.maxQueueSize
+    }), { includeSensitiveContent: input.config.includeSensitiveContent })
+  }
   const outputPath = input.config.outputPath
     ? resolveOutputPath(input.config.outputPath, input.dataDir)
     : join(input.dataDir, 'observability', 'agent-spans.jsonl')
-  return new AgentObservabilityRecorder(new JsonlAgentObservabilitySink(outputPath))
+  return new AgentObservabilityRecorder(
+    new JsonlAgentObservabilitySink(outputPath),
+    { includeSensitiveContent: input.config.includeSensitiveContent }
+  )
 }
 
 function usageAttributes(usage: UsageSnapshot, model: string | undefined): Record<string, AgentObservabilityAttributeValue> {

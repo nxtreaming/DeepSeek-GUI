@@ -72,6 +72,7 @@ export type WriteWorkspaceState = {
   selectWriteWorkspace: (workspaceRoot: string) => Promise<void>
   addWriteWorkspace: (workspaceRoot: string) => Promise<void>
   removeWriteWorkspace: (workspaceRoot: string) => Promise<void>
+  setInlineCompletionEnabled: (enabled: boolean) => Promise<void>
   initializeWorkspace: (workspaceRoot: string) => Promise<void>
   loadDirectory: (workspaceRoot: string, path?: string) => Promise<string | null>
   toggleDirectory: (workspaceRoot: string, path: string) => Promise<void>
@@ -93,7 +94,10 @@ export type WriteWorkspaceState = {
     }
   ) => Promise<boolean>
   syncActiveImageFromDisk: (workspaceRoot: string, path?: string) => Promise<boolean>
-  flushSave: (workspaceRoot: string) => Promise<boolean>
+  flushSave: (
+    workspaceRoot: string,
+    options?: { resolveExternalConflict?: 'keep-local' }
+  ) => Promise<boolean>
   createFile: (workspaceRoot: string, path: string, content?: string) => Promise<string | null>
   createDirectory: (workspaceRoot: string, path: string) => Promise<string | null>
   renameEntry: (workspaceRoot: string, path: string, newName: string) => Promise<string | null>

@@ -1,7 +1,7 @@
 import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RuntimeEvent } from '../contracts/events.js'
 import {
   AgentObservabilityRecorder,
@@ -22,6 +22,15 @@ describe('AgentObservabilityRecorder', () => {
 
   afterEach(async () => {
     await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+  })
+
+  it('shuts down its exporter so queued spans can flush before process exit', async () => {
+    const shutdown = vi.fn(async () => undefined)
+    const recorder = new AgentObservabilityRecorder({ emit: () => undefined, shutdown })
+
+    await recorder.shutdown()
+
+    expect(shutdown).toHaveBeenCalledOnce()
   })
 
   it('writes observability JSONL with private filesystem permissions', async () => {
@@ -212,7 +221,28 @@ describe('AgentObservabilityRecorder', () => {
     }))
 
     expect(sink.spans.map((span) => span.name)).toEqual(['kun.tool bash', 'kun.turn'])
-    expect(sink.spans[0].status).toEqual({ code: 'ERROR', message: 'interrupted' })
+    expect(sink.spans[0].status).toEqual({ code: 'ERROR' })
+  })
+
+  it('exports arbitrary error messages only after explicit opt-in', async () => {
+    const sink = new CaptureSink()
+    const recorder = new AgentObservabilityRecorder(sink, { includeSensitiveContent: true })
+
+    await recorder.record(event({
+      kind: 'turn_started',
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      timestamp: '2026-07-09T00:00:00.000Z'
+    }))
+    await recorder.record(event({
+      kind: 'turn_failed',
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      timestamp: '2026-07-09T00:00:00.400Z',
+      message: 'provider response may contain sensitive content'
+    }))
+
+    expect(sink.spans[0].status.message).toBe('provider response may contain sensitive content')
   })
 })
 

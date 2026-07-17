@@ -11,6 +11,7 @@ import {
   readOptionalKunConfigFile,
   type LoadedKunConfig
 } from '../config/kun-config.js'
+import { parseOtlpHeaders, resolveOtlpTracesEndpoint } from '../telemetry/otlp-http-json-sink.js'
 
 /**
  * Parse the `kun serve` command line into validated options.
@@ -49,15 +50,53 @@ export function parseServeOptions(
     configServe.tokenEconomy?.enabled ??
     configServe.tokenEconomyMode ??
     DEFAULT_SERVE_OPTIONS.tokenEconomyMode
-  const observabilityEnabled =
+  const explicitObservabilityEnabled =
     booleanFlag(raw, 'observability') ??
-    envBoolean(env.KUN_OBSERVABILITY) ??
-    configServe.observability?.enabled
+    envBoolean(env.KUN_OBSERVABILITY)
   const observabilityOutputPath =
     stringFlag(raw, 'observability-output') ??
     stringFlag(raw, 'observabilityOutput') ??
     env.KUN_OBSERVABILITY_OUTPUT_PATH ??
     configServe.observability?.outputPath
+  const otlpProtocol = nonEmptyEnv(env.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL) ??
+    nonEmptyEnv(env.OTEL_EXPORTER_OTLP_PROTOCOL)
+  const standardOtlpEnabled = env.OTEL_TRACES_EXPORTER
+    ?.split(',')
+    .map((entry) => entry.trim())
+    .includes('otlp') && otlpProtocol === 'http/json'
+  const observabilityEnabled = explicitObservabilityEnabled ??
+    (standardOtlpEnabled ? true : configServe.observability?.enabled)
+  const observabilityExporterValue =
+    stringFlag(raw, 'observability-exporter') ??
+    env.KUN_OBSERVABILITY_EXPORTER ??
+    (standardOtlpEnabled ? 'otlp-http-json' : undefined) ??
+    configServe.observability?.exporter
+  const observabilityExporter = observabilityExporterValue as
+    | 'jsonl'
+    | 'otlp-http-json'
+    | undefined
+  const otlpTracesEndpoint = nonEmptyEnv(env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT)
+  const otlpCommonEndpoint = nonEmptyEnv(env.OTEL_EXPORTER_OTLP_ENDPOINT)
+  const observabilityEndpoint =
+    otlpTracesEndpoint ??
+    (otlpCommonEndpoint
+      ? resolveOtlpTracesEndpoint({ commonEndpoint: otlpCommonEndpoint })
+      : undefined) ??
+    configServe.observability?.endpoint
+  const otlpHeaders = nonEmptyEnv(env.OTEL_EXPORTER_OTLP_TRACES_HEADERS) ??
+    nonEmptyEnv(env.OTEL_EXPORTER_OTLP_HEADERS)
+  const observabilityHeaders = parseOtlpHeaders(
+    otlpHeaders
+  ) ?? configServe.observability?.headers
+  const otlpTimeout = nonEmptyEnv(env.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT) ??
+    nonEmptyEnv(env.OTEL_EXPORTER_OTLP_TIMEOUT)
+  const observabilityTimeoutMs = numberEnv(
+    otlpTimeout
+  ) ?? configServe.observability?.timeoutMs
+  const bundledExtensionsDir =
+    stringFlag(raw, 'bundled-extensions-dir') ??
+    stringFlag(raw, 'bundledExtensionsDir') ??
+    nonEmptyEnv(env.KUN_BUNDLED_EXTENSIONS_DIR)
   const merged: ServeOptions = {
     ...DEFAULT_SERVE_OPTIONS,
     ...(loadedConfig ? { configPath: loadedConfig.path } : {}),
@@ -79,6 +118,7 @@ export function parseServeOptions(
           : env.KUN_DATA_DIR ??
             configServe.dataDir ??
             DEFAULT_SERVE_OPTIONS.dataDir,
+    ...(bundledExtensionsDir ? { bundledExtensionsDir } : {}),
     runtimeToken:
       typeof raw['runtime-token'] === 'string'
         ? raw['runtime-token']
@@ -152,11 +192,15 @@ export function parseServeOptions(
         : {})
     },
     observability:
-      observabilityEnabled !== undefined || observabilityOutputPath
+      observabilityEnabled !== undefined || observabilityOutputPath || observabilityExporter
         ? {
             ...(configServe.observability ?? {}),
-            ...(observabilityEnabled !== undefined ? { enabled: observabilityEnabled } : {}),
-            ...(observabilityOutputPath ? { outputPath: observabilityOutputPath } : {})
+            enabled: observabilityEnabled ?? false,
+            ...(observabilityOutputPath ? { outputPath: observabilityOutputPath } : {}),
+            ...(observabilityExporter ? { exporter: observabilityExporter } : {}),
+            ...(observabilityEndpoint ? { endpoint: observabilityEndpoint } : {}),
+            ...(observabilityHeaders ? { headers: observabilityHeaders } : {}),
+            ...(observabilityTimeoutMs ? { timeoutMs: observabilityTimeoutMs } : {})
           }
         : configServe.observability,
     headers: configServe.headers,
@@ -170,6 +214,17 @@ export function parseServeOptions(
     quality: loadedConfig?.config.quality
   }
   return ServeOptionsSchema.parse(merged)
+}
+
+function numberEnv(value: string | undefined): number | undefined {
+  if (!value?.trim()) return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
+
+function nonEmptyEnv(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  return trimmed || undefined
 }
 
 /**
@@ -188,6 +243,8 @@ Options:
   --host <host>            Bind address (default 127.0.0.1)
   --port <port>            HTTP port (default ${DEFAULT_SERVE_PORT})
   --data-dir <path>        Root directory for threads, events, and usage
+  --bundled-extensions-dir <path>
+                           Product-owned catalog of default local .kunx packages
   --runtime-token <token>  Bearer token for /v1/* requests
   --api-key <key>          DeepSeek-compatible API key
   --base-url <url>         DeepSeek-compatible base URL
@@ -202,6 +259,8 @@ Options:
   --observability          Write sanitized OpenTelemetry-style agent spans
   --observability-output <path>
                            JSONL span output path (default {data-dir}/observability/agent-spans.jsonl)
+  --observability-exporter <exporter>
+                           jsonl | otlp-http-json
 `
 
 export const ServeExitCode = {

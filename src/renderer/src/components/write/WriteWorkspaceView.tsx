@@ -19,6 +19,7 @@ import {
   writeJoinPath,
   writeRelativeToWorkspace
 } from '../../write/write-workspace-store'
+import { pathsEqual } from '../../write/write-workspace-store-helpers'
 import { getWriteRenderSafety } from '../../write/write-render-safety'
 import {
   applyWriteInlineEditReplacement,
@@ -52,6 +53,7 @@ import {
   WRITE_RICH_CLIPBOARD_ACTION,
   exportFormatLabel,
   formatSaveLabel,
+  isInlineCompletionToggleShortcut,
   inlineAgentPosition,
   isMarkdownFile,
   computeWriteDocumentStats,
@@ -65,6 +67,16 @@ import {
   type WriteDocumentContext
 } from '../../write/write-document-context'
 import { enqueueWriteWorkspaceFileTask } from '../../write/write-save-coordinator'
+import {
+  isWriteFocusModeFormControl,
+  writeFocusModeFloatingLayerClassName,
+  writeFocusModeShellClassName
+} from '../../write/write-focus-mode'
+import {
+  getWriteOnboardingDecision,
+  readWriteOnboardingComplete,
+  writeWriteOnboardingComplete
+} from '../../write/write-onboarding'
 
 type Props = {
   leftSidebarCollapsed: boolean; onToggleLeftSidebar: () => void
@@ -89,6 +101,10 @@ export function WriteWorkspaceView({
   // not re-render for sidebar-only state such as the directory tree or quoted
   // selections.
   const {
+    defaultWorkspaceRoot,
+    workspaceRoots,
+    settingsLoading,
+    settingsError,
     workspaceRoot,
     activeFilePath,
     activeFileKind,
@@ -96,6 +112,9 @@ export function WriteWorkspaceView({
     autoSaveEnabled,
     autoSaveDelayMs,
     rootDirectory,
+    entriesByDir,
+    loadingDirs,
+    treeError,
     inlineCompletion,
     inlineCompletionApiReady,
     selectionAssist,
@@ -116,6 +135,7 @@ export function WriteWorkspaceView({
     selection,
     recentEdits,
     loadWriteSettings,
+    setInlineCompletionEnabled,
     addWriteWorkspace,
     setFileContent,
     syncActiveFileFromDisk,
@@ -138,6 +158,10 @@ export function WriteWorkspaceView({
     setReviewActive
   } = useWriteWorkspaceStore(
     useShallow((s) => ({
+      defaultWorkspaceRoot: s.defaultWorkspaceRoot,
+      workspaceRoots: s.workspaceRoots,
+      settingsLoading: s.settingsLoading,
+      settingsError: s.settingsError,
       workspaceRoot: s.workspaceRoot,
       activeFilePath: s.activeFilePath,
       activeFileKind: s.activeFileKind,
@@ -145,6 +169,9 @@ export function WriteWorkspaceView({
       autoSaveEnabled: s.autoSaveEnabled,
       autoSaveDelayMs: s.autoSaveDelayMs,
       rootDirectory: s.rootDirectory,
+      entriesByDir: s.entriesByDir,
+      loadingDirs: s.loadingDirs,
+      treeError: s.treeError,
       inlineCompletion: s.inlineCompletion,
       inlineCompletionApiReady: s.inlineCompletionApiReady,
       selectionAssist: s.selectionAssist,
@@ -172,6 +199,7 @@ export function WriteWorkspaceView({
       selection: s.selection,
       recentEdits: s.recentEdits,
       loadWriteSettings: s.loadWriteSettings,
+      setInlineCompletionEnabled: s.setInlineCompletionEnabled,
       addWriteWorkspace: s.addWriteWorkspace,
       setFileContent: s.setFileContent,
       syncActiveFileFromDisk: s.syncActiveFileFromDisk,
@@ -204,9 +232,11 @@ export function WriteWorkspaceView({
   const [inlineEditInFlight, setInlineEditInFlight] = useState(false)
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const [exportMenuOpen, setExportMenuOpen] = useState(false)
+  const [documentFocusMode, setDocumentFocusMode] = useState(false)
   const [exportingFormat, setExportingFormat] = useState<WriteExportFormat | typeof WRITE_RICH_CLIPBOARD_ACTION | null>(null)
   const [exportNotice, setExportNotice] = useState<WriteNotice | null>(null)
   const [presentationInFlight, setPresentationInFlight] = useState(false)
+  const [onboardingComplete, setOnboardingComplete] = useState(readWriteOnboardingComplete)
   const workspaceReady = workspaceRoot.trim().length > 0
   const activeFileIsImage = activeFileKind === 'image'
   const activeFileIsPdf = activeFileKind === 'pdf'
@@ -219,6 +249,25 @@ export function WriteWorkspaceView({
     fileSize,
     truncated: fileTruncated
   })
+  const toggleInlineCompletion = useCallback((): void => {
+    const writeState = useWriteWorkspaceStore.getState()
+    void writeState.setInlineCompletionEnabled(!writeState.inlineCompletion.enabled)
+  }, [])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (
+        !activeFileIsText ||
+        renderSafety.readOnly ||
+        isWriteFocusModeFormControl(event.target) ||
+        !isInlineCompletionToggleShortcut(event)
+      ) return
+      event.preventDefault()
+      toggleInlineCompletion()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [activeFileIsText, renderSafety.readOnly, toggleInlineCompletion])
   const debouncedPreviewContent = useDebouncedValue(fileContent, writePreviewDebounceMs(fileContent.length))
   const saveLabel = activeFileIsImage
     ? t('writeImagePreview')
@@ -242,9 +291,35 @@ export function WriteWorkspaceView({
     () => (activeFileIsText ? computeWriteDocumentStats(fileContent, isMarkdown) : null),
     [activeFileIsText, fileContent, isMarkdown],
   )
-  const documentStatsLabel = documentStats ? t('writeCharacterCount', { count: documentStats.characterCount }) : null
+  const documentStatsLabel = documentStats
+    ? t('writeDocumentStats', {
+        words: documentStats.wordCount,
+        characters: documentStats.characterCount
+      })
+    : null
   const workspacePathLabel = rootDirectory || workspaceRoot
   const workspaceName = workspacePathLabel ? writeBasenameFromPath(workspacePathLabel) : t('writeWorkspace')
+  const onboardingDecision = useMemo(() => getWriteOnboardingDecision({
+    persistedComplete: onboardingComplete,
+    settingsLoading,
+    defaultWorkspaceRoot,
+    workspaceRoots,
+    workspaceRoot,
+    rootDirectory,
+    entriesByDir,
+    loadingDirs,
+    activeFilePath
+  }), [
+    activeFilePath,
+    defaultWorkspaceRoot,
+    entriesByDir,
+    loadingDirs,
+    onboardingComplete,
+    rootDirectory,
+    settingsLoading,
+    workspaceRoot,
+    workspaceRoots
+  ])
   const exportInFlight = exportingFormat !== null
   const presentationEnabled = Boolean(
     workspaceReady &&
@@ -283,6 +358,7 @@ export function WriteWorkspaceView({
     readOnly: renderSafety.readOnly,
     reviewActive,
     pendingAgentReview,
+    reviewSurfaceKey: previewMode,
     saveTimerRef,
     markdownHandleRef,
     flushSave,
@@ -298,6 +374,11 @@ export function WriteWorkspaceView({
     setExportNotice(notice)
   }
 
+  const completeOnboarding = useCallback((): void => {
+    writeWriteOnboardingComplete()
+    setOnboardingComplete(true)
+  }, [])
+
   const createDraftFile = async (): Promise<void> => {
     if (!workspaceReady) {
       await pickWriteWorkspace()
@@ -306,7 +387,8 @@ export function WriteWorkspaceView({
     const root = rootDirectory || workspaceRoot
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
     const path = writeJoinPath(root, `draft-${stamp}.md`)
-    await createFile(workspaceRoot, path, `# ${t('writeUntitledDraft')}\n\n`)
+    const created = await createFile(workspaceRoot, path, `# ${t('writeUntitledDraft')}\n\n`)
+    if (created) completeOnboarding()
   }
 
   const setAssistantPrompt = (prompt: string): void => {
@@ -793,7 +875,10 @@ export function WriteWorkspaceView({
       const picked = await window.kunGui.pickWorkspaceDirectory(workspaceRoot || undefined)
       if (!picked.canceled && picked.path) {
         await addWriteWorkspace(picked.path)
-        if (runtimeConnection === 'ready') void ensureWriteThreadForWorkspace(picked.path)
+        if (pathsEqual(useWriteWorkspaceStore.getState().workspaceRoot, picked.path)) {
+          completeOnboarding()
+          if (runtimeConnection === 'ready') void ensureWriteThreadForWorkspace(picked.path)
+        }
       }
     } catch (error) {
       setFileError(formatWorkspacePickerError(error))
@@ -892,6 +977,12 @@ export function WriteWorkspaceView({
   }, [loadWriteSettings])
 
   useEffect(() => {
+    if (!onboardingComplete && onboardingDecision === 'complete') {
+      completeOnboarding()
+    }
+  }, [completeOnboarding, onboardingComplete, onboardingDecision])
+
+  useEffect(() => {
     setExportMenuOpen(false)
   }, [activeFilePath])
 
@@ -986,7 +1077,12 @@ export function WriteWorkspaceView({
   }, [])
 
   if (!workspaceReady) {
-    return <WriteWorkspaceEmptyState error={fileError} onPickWorkspace={() => void pickWriteWorkspace()} />
+    return (
+      <WriteWorkspaceEmptyState
+        error={settingsError ?? treeError ?? fileError}
+        onPickWorkspace={() => void pickWriteWorkspace()}
+      />
+    )
   }
 
   const editorVisible = activeFileIsText && previewMode !== 'preview'
@@ -1043,7 +1139,7 @@ export function WriteWorkspaceView({
   ]
 
   return (
-    <div className="write-workspace-view ds-no-drag flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden px-3 sm:px-4 md:px-6 lg:px-8">
+    <div className={`write-workspace-view ds-no-drag flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden px-3 sm:px-4 md:px-6 lg:px-8 ${documentFocusMode ? 'is-focus-mode' : ''}`}>
       <WriteWorkspaceToolbar
         activeFileIsImage={activeFileIsImage}
         activeFileIsPdf={activeFileIsPdf}
@@ -1052,6 +1148,7 @@ export function WriteWorkspaceView({
         activeFileName={activeFileName}
         activeFilePath={activeFilePath ?? ''}
         documentStatsLabel={documentStatsLabel}
+        inlineCompletionEnabled={inlineCompletion.enabled}
         assistantOpen={assistantOpen}
         exportInFlight={exportInFlight}
         exportMenuOpen={exportMenuOpen}
@@ -1077,12 +1174,13 @@ export function WriteWorkspaceView({
         onGeneratePresentation={() => void generatePresentation()}
         onSave={() => {
           if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
-          void flushSave(workspaceRoot)
+          void flushSave(workspaceRoot, { resolveExternalConflict: 'keep-local' })
         }}
+        onToggleInlineCompletion={toggleInlineCompletion}
         onToggleLeftSidebar={onToggleLeftSidebar}
       />
       <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-hidden pb-3 pt-3">
-        <div className="min-w-0 flex-1 overflow-hidden rounded-2xl border border-ds-border-muted bg-ds-card/92 shadow-[0_12px_32px_rgba(20,47,95,0.04)] backdrop-blur-xl">
+        <div className={writeFocusModeShellClassName(documentFocusMode)}>
           <WriteWorkspaceDocumentPane
             activeFilePath={activeFilePath}
             documentEpoch={documentEpoch}
@@ -1100,6 +1198,7 @@ export function WriteWorkspaceView({
             workspaceRoot={workspaceRoot}
             workspaceName={workspaceName}
             workspacePathLabel={workspacePathLabel}
+            workspaceError={settingsError ?? treeError}
             renderSafety={renderSafety}
             fileGuardMessage={fileGuardMessage}
             fileGuardDetail={fileGuardDetail}
@@ -1112,6 +1211,12 @@ export function WriteWorkspaceView({
             richHandleRef={richHandleRef}
             markdownHandleRef={markdownHandleRef}
             onMarkdownReviewStateChange={setReviewActive}
+            focusMode={documentFocusMode}
+            onFocusModeChange={setDocumentFocusMode}
+            onboarding={onboardingDecision === 'show'}
+            workspaceLoading={
+              onboardingDecision === 'pending' && !settingsError && !treeError
+            }
             debouncedPreviewContent={debouncedPreviewContent}
             isMarkdown={isMarkdown}
             inlineCompletion={inlineCompletion}
@@ -1129,7 +1234,7 @@ export function WriteWorkspaceView({
             onSaveShortcut={() => {
               if (renderSafety.readOnly) return
               if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
-              void flushSave(workspaceRoot)
+              void flushSave(workspaceRoot, { resolveExternalConflict: 'keep-local' })
             }}
             onImagePasteSaved={() => {
               setFileError(null)
@@ -1166,17 +1271,18 @@ export function WriteWorkspaceView({
           onGenerateInfographic={generateInfographic}
           onTextareaFocus={handleInlineAgentFocus}
           onTextareaBlur={handleInlineAgentBlur}
+          focusMode={documentFocusMode}
         />
       ) : null}
 
       {fileError ? (
-        <div className="pointer-events-none fixed bottom-5 left-1/2 z-40 -translate-x-1/2 rounded-full border border-red-200/70 bg-red-50/92 px-4 py-2 text-[13px] text-red-700 shadow-[0_14px_32px_rgba(20,47,95,0.12)] dark:border-red-900/60 dark:bg-red-950/84 dark:text-red-200">
+        <div className={`pointer-events-none fixed bottom-5 left-1/2 -translate-x-1/2 rounded-full border border-red-200/70 bg-red-50/92 px-4 py-2 text-[13px] text-red-700 shadow-[0_14px_32px_rgba(20,47,95,0.12)] dark:border-red-900/60 dark:bg-red-950/84 dark:text-red-200 ${writeFocusModeFloatingLayerClassName(documentFocusMode, 'z-40')}`}>
           {fileError}
         </div>
       ) : null}
       {exportNotice ? (
         <div
-          className={`pointer-events-none fixed left-1/2 z-40 -translate-x-1/2 rounded-full border px-4 py-2 text-[13px] shadow-[0_14px_32px_rgba(20,47,95,0.12)] ${
+          className={`pointer-events-none fixed left-1/2 -translate-x-1/2 rounded-full border px-4 py-2 text-[13px] shadow-[0_14px_32px_rgba(20,47,95,0.12)] ${writeFocusModeFloatingLayerClassName(documentFocusMode, 'z-40')} ${
             exportNotice.tone === 'error'
               ? 'border-red-200/70 bg-red-50/92 text-red-700 dark:border-red-900/60 dark:bg-red-950/84 dark:text-red-200'
               : 'border-emerald-200/80 bg-emerald-50/92 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/84 dark:text-emerald-200'

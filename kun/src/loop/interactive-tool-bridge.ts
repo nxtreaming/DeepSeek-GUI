@@ -1,6 +1,6 @@
 import type { TurnItem } from '../contracts/items.js'
 import { makeUserInputItem } from '../domain/item.js'
-import type { ApprovalRequest } from '../domain/approval.js'
+import type { ApprovalRequest, ApprovalResolution } from '../domain/approval.js'
 import type { ApprovalGate } from '../ports/approval-gate.js'
 import type { SessionStore } from '../ports/session-store.js'
 import type { ToolHostContext } from '../ports/tool-host.js'
@@ -44,15 +44,47 @@ export type AwaitToolUserInputInput = {
 export class InteractiveToolBridge {
   constructor(private readonly deps: InteractiveToolBridgeDeps) {}
 
-  async awaitApproval(input: AwaitToolApprovalInput): Promise<'allow' | 'deny'> {
+  async awaitApproval(
+    input: AwaitToolApprovalInput
+  ): Promise<'allow' | 'deny' | ApprovalResolution> {
     const pending = this.deps.approvalGate.request(input.approval)
-    const cancelPendingApproval = (reason: string): void => {
-      if (!this.deps.approvalGate.expire?.(input.approval.id, reason)) {
-        this.deps.approvalGate.decide(input.approval.id, 'deny', reason)
+    return new Promise<ApprovalResolution>((resolve, reject) => {
+      let settled = false
+      let requested!: Promise<unknown>
+      const cleanup = (): void => input.signal.removeEventListener('abort', onAbort)
+      const recordExpiredAfterRequest = (): void => {
+        void requested.then(async () => {
+          await pending
+          const current = this.deps.approvalGate.get(input.approval.id)
+          if (current?.status !== 'expired') return
+          await this.deps.events.record({
+            kind: 'approval_resolved',
+            threadId: input.approval.threadId,
+            turnId: input.approval.turnId,
+            approvalId: input.approval.id,
+            toolName: input.approval.toolName,
+            status: 'expired',
+            summary: input.approval.summary,
+            ...(current.reason ? { reason: current.reason } : {})
+          })
+        }).catch(() => undefined)
       }
-    }
-    try {
-      await this.deps.events.record({
+      const expirePending = (reason: string): void => {
+        if (this.deps.approvalGate.expire(input.approval.id, reason)) {
+          recordExpiredAfterRequest()
+        }
+      }
+      const onAbort = (): void => {
+        if (settled) return
+        settled = true
+        cleanup()
+        const reason = 'turn aborted while awaiting approval'
+        expirePending(reason)
+        reject(new Error(reason))
+      }
+
+      input.signal.addEventListener('abort', onAbort, { once: true })
+      requested = this.deps.events.record({
         kind: 'approval_requested',
         threadId: input.approval.threadId,
         turnId: input.approval.turnId,
@@ -63,17 +95,43 @@ export class InteractiveToolBridge {
         sandboxMode: input.sandboxMode,
         summary: input.approval.summary
       })
-    } catch (error) {
-      cancelPendingApproval('failed to publish approval request')
-      void pending.catch(() => undefined)
-      throw error
-    }
-    return awaitAbortableGate(
-      pending,
-      input.signal,
-      () => { cancelPendingApproval('turn aborted while awaiting approval') },
-      'approval wait aborted'
-    )
+
+      if (input.signal.aborted) {
+        onAbort()
+        return
+      }
+      requested.then(
+        () => {
+          if (settled) return
+          pending.then(
+            (decision) => {
+              if (settled) return
+              settled = true
+              cleanup()
+              const resolved = this.deps.approvalGate.get(input.approval.id)
+              resolve({
+                decision,
+                ...(resolved?.reason ? { reason: resolved.reason } : {})
+              })
+            },
+            (error) => {
+              if (settled) return
+              settled = true
+              cleanup()
+              reject(error)
+            }
+          )
+        },
+        (error) => {
+          if (settled) return
+          settled = true
+          cleanup()
+          this.deps.approvalGate.expire(input.approval.id, 'failed to publish approval request')
+          void pending.catch(() => undefined)
+          reject(error)
+        }
+      )
+    })
   }
 
   async awaitUserInput(input: AwaitToolUserInputInput): Promise<UserInputResolution> {

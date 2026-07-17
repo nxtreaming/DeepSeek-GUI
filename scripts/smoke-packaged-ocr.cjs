@@ -45,6 +45,8 @@ async function main() {
 
   const packagedRequire = requireFromPackagedNodeModules(unpackedNodeModules)
   const canvas = packagedRequire('@napi-rs/canvas')
+  const sharpModule = packagedRequire('sharp')
+  const sharp = typeof sharpModule === 'function' ? sharpModule : sharpModule.default
   const tesseractModule = packagedRequire('tesseract.js')
   const tesseract = typeof tesseractModule.createWorker === 'function'
     ? tesseractModule
@@ -53,6 +55,9 @@ async function main() {
 
   if (typeof canvas.createCanvas !== 'function') {
     fail('Packaged @napi-rs/canvas did not expose createCanvas.')
+  }
+  if (typeof sharp !== 'function') {
+    fail('Packaged sharp did not expose its image factory.')
   }
   if (typeof tesseract?.createWorker !== 'function') {
     fail('Packaged tesseract.js did not expose createWorker.')
@@ -66,6 +71,17 @@ async function main() {
   context.fillStyle = '#fff'
   context.fillRect(0, 0, testCanvas.width, testCanvas.height)
   testCanvas.toBuffer('image/png')
+
+  const onePixelPng = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64'
+  )
+  const decoded = await sharp(onePixelPng, { failOn: 'error', limitInputPixels: 1 })
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+  if (decoded.info.width !== 1 || decoded.info.height !== 1) {
+    fail(`Packaged sharp returned unexpected dimensions: ${decoded.info.width}x${decoded.info.height}`)
+  }
 
   let worker = null
   try {

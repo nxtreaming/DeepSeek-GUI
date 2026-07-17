@@ -22,7 +22,11 @@ import {
   nextWriteDocumentEpoch,
   writeDocumentContextMatches
 } from './write-document-context'
-import { enqueueWriteWorkspaceSave } from './write-save-coordinator'
+import {
+  enqueueWriteWorkspaceSave,
+  flushWriteWorkspaceSaveQueue,
+  isWriteWorkspaceSaveContentPending
+} from './write-save-coordinator'
 import {
   WRITE_ASSISTANT_MODEL_KEY,
   WRITE_ASSISTANT_PROVIDER_KEY,
@@ -126,7 +130,11 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
     if (!context || !snapshot.activeFilePath) return false
     if (!pathsEqual(context.workspaceRoot, workspaceRoot)) return false
     if (snapshot.activeFileKind !== 'text') return false
-    if (!force && (snapshot.saveStatus === 'dirty' || snapshot.saveStatus === 'saving')) return false
+    if (
+      !force &&
+      snapshot.fileContent !== snapshot.persistedContent &&
+      typeof options.content !== 'string'
+    ) return false
     if (options.path && !pathsEqual(options.path, snapshot.activeFilePath)) return false
 
     if (options.message) {
@@ -179,7 +187,58 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
       !latest.activeFilePath ||
       !pathsEqual(latest.activeFilePath, resolvedPath)
     ) return false
-    if (!force && (latest.saveStatus === 'dirty' || latest.saveStatus === 'saving')) return false
+    if (
+      !force &&
+      isWriteWorkspaceSaveContentPending(context.workspaceRoot, context.filePath, content)
+    ) {
+      // Filesystem watchers can fire before the corresponding IPC write has
+      // settled. Keep the save loop authoritative and do not misclassify its
+      // payload as an external assistant edit.
+      set({
+        fileLoading: false,
+        fileSize: nextSize,
+        fileTruncated: nextTruncated
+      })
+      return true
+    }
+
+    const hasLocalDraft = latest.fileContent !== latest.persistedContent
+    if (!force && hasLocalDraft) {
+      if (content === latest.persistedContent) {
+        // Delayed echo of the last confirmed baseline. It carries no new disk
+        // revision and must not disturb the newer local draft.
+        set({
+          fileLoading: false,
+          fileSize: nextSize,
+          fileTruncated: nextTruncated
+        })
+        return true
+      }
+      if (content === latest.fileContent) {
+        // The watcher confirms that the disk caught up with the local draft.
+        // This can happen just after the write promise settles.
+        cancelExternalSyncAnimation()
+        set({
+          persistedContent: content,
+          saveStatus: 'saved',
+          fileError: null,
+          fileLoading: false,
+          fileSize: nextSize,
+          fileTruncated: nextTruncated
+        })
+        return true
+      }
+      if (
+        options.reviewAsDiff !== true ||
+        nextTruncated ||
+        content.length > MAX_ANIMATED_EXTERNAL_SYNC_CHARS
+      ) {
+        return false
+      }
+      // Fall through to the diff-review branch. It updates the disk baseline
+      // but deliberately leaves fileContent/saveStatus untouched, preserving
+      // the local draft until the user resolves the review.
+    }
     if (
       latest.fileContent === content &&
       latest.persistedContent === content &&
@@ -321,13 +380,33 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
     }
   },
 
-  flushSave: async (workspaceRoot) => {
+  flushSave: async (workspaceRoot, options = {}) => {
     for (;;) {
       const state = get()
       if (!state.activeFilePath || state.activeFileKind !== 'text') return true
       if (state.fileTruncated) return false
       const context = captureWriteDocumentContext(state)
       if (!context || !pathsEqual(context.workspaceRoot, workspaceRoot)) return false
+      const resolveExternalConflict = options.resolveExternalConflict === 'keep-local'
+      if (state.reviewActive && !state.pendingAgentReview) {
+        // A live source-editor diff must be resolved through its accept/reject
+        // controls; Save cannot safely infer the user's chosen result.
+        return false
+      }
+      if (state.pendingAgentReview && !resolveExternalConflict) {
+        // An unresolved external review must survive background
+        // autosave/navigation. Only an explicit Save may choose the local
+        // draft over the external disk revision.
+        return false
+      }
+      await flushWriteWorkspaceSaveQueue(context.workspaceRoot, context.filePath)
+      const afterQueuedSave = get()
+      if (!writeDocumentContextMatches(afterQueuedSave, context)) return true
+      if (afterQueuedSave !== state) {
+        // Another flush may have settled (or the user may have edited) while
+        // this caller waited. Re-evaluate from the newest persisted baseline.
+        continue
+      }
       if (externalSyncTimer !== null) {
         cancelExternalSyncAnimation()
         set((current) => writeDocumentContextMatches(current, context)
@@ -342,7 +421,14 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
       }
       cancelExternalSyncAnimation()
       if (state.fileContent === state.persistedContent) {
-        if (writeDocumentContextMatches(get(), context)) set({ saveStatus: 'saved' })
+        if (writeDocumentContextMatches(get(), context)) {
+          set({
+            saveStatus: 'saved',
+            ...(resolveExternalConflict
+              ? { pendingAgentReview: null, reviewActive: false, fileError: null }
+              : {})
+          })
+        }
         return true
       }
 
@@ -381,7 +467,10 @@ export const useWriteWorkspaceStore = create<WriteWorkspaceState>((set, get) => 
         return {
           persistedContent: content,
           saveStatus: latestIsPersisted ? 'saved' : 'dirty',
-          fileError: null
+          fileError: null,
+          ...(resolveExternalConflict
+            ? { pendingAgentReview: null, reviewActive: false }
+            : {})
         }
       })
       const latest = get()

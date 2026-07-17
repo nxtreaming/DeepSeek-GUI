@@ -14,6 +14,11 @@ describe('design turn prompt design mode context', () => {
     expect(prompt).toContain('BUILD A SINGLE SCREEN')
     expect(prompt).toContain('BUILD A COMPLETE MULTI-SCREEN EXPERIENCE')
     expect(prompt).toContain('one `design_create_screen` call with a `screens` array')
+    expect(prompt).toContain('DESIGN FOUNDATION GUIDANCE')
+    expect(prompt).toContain('normally call `design_system` with `operation: "create"` before `design_create_screen`')
+    expect(prompt).toContain('This is a preferred sequence, not a hard gate')
+    expect(prompt).toContain('DESIGN-SYSTEM CLAIMS MUST BE FACTUAL')
+    expect(prompt).toContain('Per-screen `.kun-design/.../DESIGN.md` notes')
     expect(prompt).toContain('ask one concise question with `user_input`')
     expect(prompt).toContain('prefer the fewest calls')
     expect(prompt).not.toContain('Design mode workflow contract:')
@@ -35,6 +40,8 @@ describe('design turn prompt design mode context', () => {
 
     expect(prompt).not.toContain('Design mode workflow contract:')
     expect(prompt).not.toContain('BUILD A COMPLETE MULTI-SCREEN EXPERIENCE')
+    expect(prompt).not.toContain('DESIGN FOUNDATION GUIDANCE')
+    expect(prompt).not.toContain('DESIGN-SYSTEM CLAIMS MUST BE FACTUAL')
     expect(prompt).toContain('Code sidebar whiteboard')
   })
 

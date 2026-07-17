@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -24,18 +24,61 @@ import {
 } from '../../../kun/src/server/approval-consent.js'
 
 const handlers = new Map<string, (event: unknown, payload?: unknown) => Promise<unknown>>()
-const electronMock = vi.hoisted(() => ({ showMessageBox: vi.fn() }))
+const electronMock = vi.hoisted(() => ({
+  showMessageBox: vi.fn(),
+  openPath: vi.fn(async () => ''),
+  showItemInFolder: vi.fn()
+}))
+const uiPluginMocks = vi.hoisted(() => ({
+  ensureBundledUiPlugins: vi.fn(async () => undefined),
+  installUiPluginFromDirectory: vi.fn(),
+  listUiPlugins: vi.fn(),
+  loadUiPluginFigures: vi.fn(),
+  removeUiPlugin: vi.fn(),
+  activate: vi.fn(async (_pluginId: string, _css: string) => undefined),
+  deactivate: vi.fn(async () => undefined)
+}))
 
 vi.mock('electron', () => ({
   app: {
     quit: vi.fn()
   },
   dialog: { showMessageBox: electronMock.showMessageBox },
-  shell: {},
+  shell: {
+    openPath: electronMock.openPath,
+    showItemInFolder: electronMock.showItemInFolder
+  },
   ipcMain: {
     handle: vi.fn((channel: string, handler: (event: unknown, payload?: unknown) => Promise<unknown>) => {
       handlers.set(channel, handler)
     })
+  }
+}))
+
+vi.mock('../services/ui-plugin-service', () => ({
+  installUiPluginFromDirectory: uiPluginMocks.installUiPluginFromDirectory,
+  listUiPlugins: uiPluginMocks.listUiPlugins,
+  loadUiPluginFigures: uiPluginMocks.loadUiPluginFigures,
+  removeUiPlugin: uiPluginMocks.removeUiPlugin
+}))
+
+vi.mock('../ui-plugin-bundled', () => ({
+  ensureBundledUiPlugins: uiPluginMocks.ensureBundledUiPlugins
+}))
+
+vi.mock('../services/ui-plugin-cdp-theme-controller', () => ({
+  UiPluginCdpThemeController: class {
+    activePluginId: string | null = null
+
+    async activate(pluginId: string, css: string): Promise<void> {
+      await uiPluginMocks.activate(pluginId, css)
+      this.activePluginId = pluginId
+    }
+
+    async deactivate(): Promise<void> {
+      await uiPluginMocks.deactivate()
+      this.activePluginId = null
+    }
   }
 }))
 
@@ -102,6 +145,39 @@ describe('registerAppIpcHandlers', () => {
   beforeEach(() => {
     handlers.clear()
     electronMock.showMessageBox.mockReset()
+    electronMock.openPath.mockClear()
+    electronMock.showItemInFolder.mockClear()
+    uiPluginMocks.ensureBundledUiPlugins.mockClear()
+    uiPluginMocks.installUiPluginFromDirectory.mockReset()
+    uiPluginMocks.listUiPlugins.mockReset()
+    uiPluginMocks.loadUiPluginFigures.mockReset()
+    uiPluginMocks.removeUiPlugin.mockReset()
+    uiPluginMocks.activate.mockClear()
+    uiPluginMocks.deactivate.mockClear()
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('bypasses cache for development reload commands and keeps packaged reloads ordinary', async () => {
+    const reload = vi.fn()
+    const reloadIgnoringCache = vi.fn()
+    const contents = { reload, reloadIgnoringCache }
+    const mainWindow = { isDestroyed: () => false, webContents: contents }
+    registerAppIpcHandlers(registerOptions({ getMainWindow: () => mainWindow as never }))
+    const handler = handlers.get('desktop:command')
+
+    vi.stubEnv('ELECTRON_RENDERER_URL', 'http://127.0.0.1:5173')
+    await handler?.({ sender: contents }, 'reload')
+    expect(reloadIgnoringCache).toHaveBeenCalledOnce()
+    expect(reload).not.toHaveBeenCalled()
+
+    reloadIgnoringCache.mockClear()
+    vi.stubEnv('ELECTRON_RENDERER_URL', '')
+    await handler?.({ sender: contents }, 'reload')
+    expect(reload).toHaveBeenCalledOnce()
+    expect(reloadIgnoringCache).not.toHaveBeenCalled()
   })
 
   it('rejects invalid settings patches at the handler boundary', async () => {
@@ -115,6 +191,21 @@ describe('registerAppIpcHandlers', () => {
       handler?.({}, { agents: { kun: { mysteryFlag: true } } })
     ).rejects.toThrow(/Invalid payload for settings:set/)
     expect(applySettingsPatch).not.toHaveBeenCalled()
+  })
+
+  it('reports whether a workspace directory currently exists', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kun-workspace-exists-'))
+    const filePath = join(root, 'not-a-directory')
+    writeFileSync(filePath, 'file', 'utf8')
+    registerAppIpcHandlers(registerOptions())
+
+    const handler = handlers.get('workspace:directory-exists')
+    expect(handler).toBeTypeOf('function')
+    await expect(handler?.({}, root)).resolves.toBe(true)
+    await expect(handler?.({}, filePath)).resolves.toBe(false)
+    await expect(handler?.({}, join(root, 'missing'))).resolves.toBe(false)
+
+    rmSync(root, { recursive: true, force: true })
   })
 
   it('passes valid settings patches through to applySettingsPatch', async () => {
@@ -216,6 +307,88 @@ describe('registerAppIpcHandlers', () => {
       approvalId: 'approval-1',
       decision: 'allow'
     })).toBe(true)
+  })
+
+  it('rejects every UI plugin bridge outside the trusted top-level workbench frame', async () => {
+    const mainFrame = { processId: 10, routingId: 20 }
+    const contents = { id: 7, mainFrame }
+    const mainWindow = { isDestroyed: () => false, webContents: contents }
+    registerAppIpcHandlers(registerOptions({ getMainWindow: () => mainWindow as never }))
+    const untrustedEvent = {
+      sender: contents,
+      senderFrame: { processId: 10, routingId: 21 }
+    }
+
+    for (const [channel, payload] of [
+      ['ui-plugin:list', undefined],
+      ['ui-plugin:install', undefined],
+      ['ui-plugin:remove', { id: 'starlight' }],
+      ['ui-plugin:load', { id: 'starlight' }],
+      ['ui-plugin:theme:activate', { id: 'starlight' }],
+      ['ui-plugin:theme:deactivate', undefined]
+    ] as const) {
+      await expect(handlers.get(channel)?.(untrustedEvent, payload)).rejects.toThrow(
+        /trusted workbench frame/
+      )
+    }
+  })
+
+  it('builds presentation variables in Main before activating the fixed CDP stylesheet', async () => {
+    const mainFrame = { processId: 10, routingId: 20 }
+    const contents = { id: 7, mainFrame }
+    const mainWindow = { isDestroyed: () => false, webContents: contents }
+    uiPluginMocks.loadUiPluginFigures.mockResolvedValueOnce({
+      ok: true,
+      manifest: {
+        id: 'portrait-theme',
+        name: 'Portrait theme',
+        version: '1.0.0',
+        figures: { portrait: 'img/portrait.png' },
+        presentation: {
+          character: {
+            anchor: 'right',
+            size: 'hero',
+            offsetX: 4,
+            offsetY: -2,
+            opacity: 0.93,
+            frame: 'crystal',
+            motion: 'float',
+            contentReserve: 'wide'
+          },
+          readability: { scrim: 'opposite-character', strength: 'medium' },
+          surfaces: {
+            sidebar: 'glass',
+            topbar: 'translucent',
+            composer: 'strong-glass',
+            cards: 'glass'
+          }
+        }
+      },
+      figures: { portrait: 'data:image/png;base64,AAAA' },
+      backgrounds: {}
+    })
+    registerAppIpcHandlers(registerOptions({ getMainWindow: () => mainWindow as never }))
+
+    const response = await handlers.get('ui-plugin:theme:activate')?.(
+      { sender: contents, senderFrame: mainFrame },
+      { id: 'portrait-theme' }
+    )
+
+    expect(response).toMatchObject({
+      ok: true,
+      manifest: { id: 'portrait-theme' },
+      figures: { portrait: 'data:image/png;base64,AAAA' }
+    })
+    expect(uiPluginMocks.ensureBundledUiPlugins).toHaveBeenCalledOnce()
+    expect(uiPluginMocks.activate).toHaveBeenCalledOnce()
+    const [pluginId, css] = uiPluginMocks.activate.mock.calls[0] ?? []
+    expect(pluginId).toBe('portrait-theme')
+    expect(css).toContain("html[data-ui-plugin='portrait-theme']")
+    expect(css).toContain('--kun-ui-plugin-character-offset-x: 4%;')
+    expect(css).toContain('--kun-ui-plugin-character-offset-y: -2%;')
+    expect(css).toContain('--kun-ui-plugin-character-opacity: 0.93;')
+    expect(css).not.toContain('crystal')
+    expect(css).not.toContain('opposite-character')
   })
 
   it('accepts checkpoint cleanup settings patches', async () => {
@@ -322,6 +495,61 @@ describe('registerAppIpcHandlers', () => {
     } finally {
       rmSync(temp, { recursive: true, force: true })
     }
+  })
+
+  it('opens and reveals only runtime-validated generated artifacts', async () => {
+    const mainFrame = { processId: 10, routingId: 20 }
+    const mainContents = { id: 1, mainFrame }
+    const runtimeRequest = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body: JSON.stringify({
+        artifactId: 'artifact_1234567890',
+        absolutePath: '/tmp/workspace/exports/final.mp4',
+        displayName: 'final.mp4',
+        mimeType: 'video/mp4'
+      })
+    }))
+    registerAppIpcHandlers(registerOptions({
+      getMainWindow: () => ({
+        isDestroyed: () => false,
+        webContents: mainContents
+      }) as never,
+      runtimeRequest
+    }))
+    const handler = handlers.get('extension:artifact:open')!
+    const payload = {
+      artifactId: 'artifact_1234567890',
+      ownerExtensionId: 'kun.video-editor',
+      ownerExtensionVersion: '1.1.0',
+      workspaceId: 'a'.repeat(64),
+      workspaceRoot: '/tmp/workspace',
+      action: 'open'
+    }
+    await expect(handler({ sender: mainContents, senderFrame: mainFrame }, payload))
+      .resolves.toEqual({ ok: true })
+    expect(runtimeRequest).toHaveBeenCalledWith(
+      '/v1/extensions/media/artifacts/resolve',
+      'POST',
+      JSON.stringify({
+        artifactId: payload.artifactId,
+        ownerExtensionId: payload.ownerExtensionId,
+        ownerExtensionVersion: payload.ownerExtensionVersion,
+        workspaceId: payload.workspaceId,
+        workspaceRoot: payload.workspaceRoot
+      })
+    )
+    expect(electronMock.openPath).toHaveBeenCalledWith('/tmp/workspace/exports/final.mp4')
+
+    await expect(handler(
+      { sender: mainContents, senderFrame: mainFrame },
+      { ...payload, action: 'reveal' }
+    )).resolves.toEqual({ ok: true })
+    expect(electronMock.showItemInFolder).toHaveBeenCalledWith('/tmp/workspace/exports/final.mp4')
+    await expect(handler(
+      { sender: { id: 99 }, senderFrame: { processId: 99, routingId: 99 } },
+      payload
+    )).rejects.toThrow(/trusted workbench frame/)
   })
 
   it('keeps workspace watches alive across atomic replacements and releases the sender listener', async () => {
@@ -621,6 +849,25 @@ describe('registerAppIpcHandlers', () => {
       expect(second.path.startsWith(root)).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not create a missing custom conversation workspace root', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'kun-conv-missing-'))
+    const root = join(parent, 'custom-root')
+    try {
+      registerAppIpcHandlers(registerOptions({
+        store: { load: vi.fn(async () => ({ ...settings(), conversationWorkspaceRoot: root })) } as never
+      }))
+
+      const handler = handlers.get('conversation:create-workspace')
+      const result = await handler?.({}) as { ok: boolean; path: string; error?: string }
+
+      expect(result.ok).toBe(false)
+      expect(result.path).toBe('')
+      expect(existsSync(root)).toBe(false)
+    } finally {
+      rmSync(parent, { recursive: true, force: true })
     }
   })
 })

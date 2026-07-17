@@ -18,6 +18,7 @@ export type WorkbenchRightPanelHostProps = Pick<
   | 'canvas'
   | 'file'
   | 'extensionView'
+  | 'code'
   | 'workspaceRoot'
   | 'onCollapse'
 > & {
@@ -49,6 +50,7 @@ export function WorkbenchRightPanelHost({
   canvas,
   file,
   extensionView,
+  code,
   workspaceRoot,
   onCollapse
 }: WorkbenchRightPanelHostProps): ReactElement | null {
@@ -70,6 +72,7 @@ export function WorkbenchRightPanelHost({
       canvas={canvas}
       file={file}
       extensionView={extensionView}
+      code={code}
       workspaceRoot={workspaceRoot}
       onCollapse={onCollapse}
     />

@@ -77,6 +77,15 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Install host-native FFmpeg
+        run: |
+          brew install ffmpeg-full
+          ffmpeg_bin="$(brew --prefix ffmpeg-full)/bin"
+          "$ffmpeg_bin/ffmpeg" -hide_banner -filters 2>&1 | grep -Eq '[[:space:]]drawtext[[:space:]]'
+          echo "$ffmpeg_bin" >> "$GITHUB_PATH"
+          echo "KUN_FFMPEG_PATH=$ffmpeg_bin/ffmpeg" >> "$GITHUB_ENV"
+          echo "KUN_FFPROBE_PATH=$ffmpeg_bin/ffprobe" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         run: npm ci
 
@@ -132,10 +141,20 @@ jobs:
       - name: Smoke packaged Extension Node runtime (macOS arm64)
         run: npm run smoke:packaged-extensions -- --resources dist/mac-arm64/Kun.app/Contents/Resources
 
+      - name: Smoke host-native FFmpeg broker (fail closed)
+        env:
+          KUN_RUN_MEDIA_SMOKE: '1'
+        run: npm run smoke:extension-native-media
+
+      - name: Smoke packaged Kun Video Editor native workflow
+        run: npm run smoke:packaged-video-editor-native
+
       - name: Smoke packaged Extension desktop Chromium (host-native macOS)
         run: npm run smoke:packaged-extension-desktop
 
       - name: Record commit-bound macOS artifact evidence
+        env:
+          KUN_EVIDENCE_COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
         run: npm run evidence:extension-native
 
       - name: Upload macOS artifacts
@@ -176,6 +195,19 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Install host-native FFmpeg
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue) -or -not (Get-Command ffprobe.exe -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg --yes --no-progress
+          }
+          $ffmpegPath = (Get-Command ffmpeg.exe).Source
+          if ((& $ffmpegPath -hide_banner -filters 2>&1 | Out-String) -notmatch '\sdrawtext\s') {
+            throw 'Installed FFmpeg does not provide the required drawtext filter.'
+          }
+          "KUN_FFMPEG_PATH=$ffmpegPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "KUN_FFPROBE_PATH=$((Get-Command ffprobe.exe).Source)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Install dependencies
         run: npm ci
 
@@ -188,10 +220,20 @@ jobs:
       - name: Smoke packaged Extension Node runtime
         run: npm run smoke:packaged-extensions -- --resources dist/win-unpacked/resources
 
+      - name: Smoke host-native FFmpeg broker (fail closed)
+        env:
+          KUN_RUN_MEDIA_SMOKE: '1'
+        run: npm run smoke:extension-native-media
+
+      - name: Smoke packaged Kun Video Editor native workflow
+        run: npm run smoke:packaged-video-editor-native
+
       - name: Smoke packaged Extension desktop Chromium
         run: npm run smoke:packaged-extension-desktop
 
       - name: Record commit-bound Windows artifact evidence
+        env:
+          KUN_EVIDENCE_COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
         run: npm run evidence:extension-native
 
       - name: Upload Windows artifacts
@@ -236,7 +278,8 @@ jobs:
           sudo apt-get update
           # build-essential + python3: node-pty ships no Linux prebuild, so it
           # must be compiled from source against Electron's ABI during dist.
-          sudo apt-get install -y --no-install-recommends libarchive-tools rpm build-essential python3 xvfb xauth util-linux
+          sudo apt-get install -y --no-install-recommends libarchive-tools rpm build-essential python3 xvfb xauth util-linux ffmpeg
+          ffmpeg -hide_banner -filters 2>&1 | grep -Eq '[[:space:]]drawtext[[:space:]]'
 
       - name: Install dependencies
         run: npm ci
@@ -249,6 +292,19 @@ jobs:
 
       - name: Smoke packaged Extension Node runtime
         run: npm run smoke:packaged-extensions -- --resources dist/linux-unpacked/resources
+
+      - name: Smoke host-native FFmpeg broker (fail closed)
+        env:
+          KUN_RUN_MEDIA_SMOKE: '1'
+        run: npm run smoke:extension-native-media
+
+      - name: Build deterministic Kun Video Editor extension package
+        run: npm run pack:kun-video-editor
+
+      - name: Smoke packaged Kun Video Editor native workflow
+        run: >
+          npm run smoke:packaged-video-editor-native --
+          --archive dist/kun-video-editor-0.4.4.kunx
 
       - name: Prepare and verify Linux user namespace sandbox
         run: |
@@ -268,6 +324,8 @@ jobs:
         run: npm run smoke:packaged-extension-appimage
 
       - name: Record commit-bound Linux artifact evidence
+        env:
+          KUN_EVIDENCE_COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
         run: npm run evidence:extension-native
 
       - name: Upload Linux artifacts
@@ -281,6 +339,7 @@ jobs:
             dist/Kun-*-linux-x86_64.AppImage.blockmap
             dist/latest-linux.yml
             dist/extension-native-evidence-linux.json
+            dist/kun-video-editor-*.kunx
 
   publish:
     name: Publish GitHub Release and R2
@@ -345,6 +404,7 @@ jobs:
             "extension-native-evidence-darwin.json"
             "extension-native-evidence-win32.json"
             "extension-native-evidence-linux.json"
+            "kun-video-editor-0.4.4.kunx"
           )
 
           for pattern in "${required[@]}"; do
@@ -399,6 +459,17 @@ jobs:
             git push origin "refs/tags/${TAG_NAME}"
           fi
 
+      - name: Verify three-platform native evidence bundle
+        run: >
+          npm run verify:extension-native-evidence --
+          --directory release-artifacts
+          --commit "$(git rev-parse HEAD)"
+          --tag "${TAG_NAME}"
+          --version "${RELEASE_VERSION}"
+
+      - name: Verify downloadable Kun Video Editor extension package
+        run: npm run verify:kun-video-editor-package -- --input release-artifacts
+
       - name: Create or update draft GitHub Release
         run: |
           set -euo pipefail
@@ -419,7 +490,7 @@ jobs:
           set -euo pipefail
           mapfile -d '' assets < <(
             find release-artifacts -type f \
-              \( -name 'Kun-*' -o -name 'latest*.yml' \) \
+              \( -name 'Kun-*' -o -name 'latest*.yml' -o -name 'extension-native-evidence-*.json' -o -name 'kun-video-editor-*.kunx' \) \
               -print0
           )
 

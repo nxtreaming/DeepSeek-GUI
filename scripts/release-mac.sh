@@ -6,8 +6,8 @@ set -euo pipefail
 # Usage:
 #   ./scripts/release-mac.sh
 #   ./scripts/release-mac.sh --tag v0.1.3
-#   ./scripts/release-mac.sh --r2              # upload and promote macOS latest on R2
-#   ./scripts/release-mac.sh --stable --r2     # publish to the stable update channel
+#   ./scripts/release-mac.sh --r2              # upload macOS metadata only; promotion waits for Windows
+#   ./scripts/release-mac.sh --stable --r2     # upload stable-channel macOS metadata only
 #   ./scripts/release-mac.sh --r2-upload-only  # upload archive only, no latest promotion
 #   ./scripts/release-mac.sh --publish
 #   ./scripts/release-mac.sh --p12 ... --p12-password ... --p8 ... --key-id ... --issuer ...
@@ -50,7 +50,7 @@ MAC_RELEASE_PARALLEL="${MAC_RELEASE_PARALLEL:-1}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --publish) PUBLISH=true; shift ;;
-    --r2) R2_UPLOAD=true; R2_PROMOTE=true; shift ;;
+    --r2) R2_UPLOAD=true; R2_PROMOTE=false; shift ;;
     --r2-upload-only) R2_UPLOAD=true; R2_PROMOTE=false; shift ;;
     --r2-promote) R2_UPLOAD=true; R2_PROMOTE=true; shift ;;
     --tag) RELEASE_TAG="$2"; shift 2 ;;
@@ -74,6 +74,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "$(uname -s)" == "Darwin" ]] || die "release-mac.sh must run on macOS."
+
+if [[ "${R2_PROMOTE}" == "true" ]]; then
+  die "macOS release only uploads single-platform R2 metadata; run release-win.sh --r2-promote after the complete three-platform bundle passes verification."
+fi
 
 build_mac_arch() {
   local arch="$1"
@@ -226,11 +230,28 @@ smoke_macos_extensions() {
   cyan "Smoking packaged Extension desktop Chromium (host-native macOS ${host_arch})..."
   npm run smoke:packaged-extension-desktop -- --resources "${host_resources}" \
     || die "macOS packaged Extension desktop Chromium smoke failed"
+
+  cyan "Smoking host-native FFmpeg broker (macOS ${host_arch})..."
+  KUN_RUN_MEDIA_SMOKE=1 npm run smoke:extension-native-media \
+    || die "macOS host-native FFmpeg broker smoke failed"
+
+  cyan "Smoking packaged Kun Video Editor native workflow (macOS ${host_arch})..."
+  npm run smoke:packaged-video-editor-native -- --resources "${host_resources}" \
+    --archive "${ROOT}/dist/kun-video-editor-0.4.4.kunx" \
+    || die "macOS packaged Kun Video Editor native workflow smoke failed"
+
+  cyan "Recording commit-bound macOS native evidence..."
+  npm run evidence:extension-native \
+    || die "macOS native evidence generation failed"
 }
 
 release_check_prerequisites
 release_apply_signing_env
 release_acquire_lock
+
+cyan "Verifying clean release checkout..."
+npm run verify:manual-extension-release -- --clean-only \
+  || die "Release checkout contains tracked or untracked changes"
 
 cyan "Computing release version..."
 if [[ -n "${RELEASE_TAG}" ]]; then
@@ -254,6 +275,10 @@ release_clean_dist_artifacts
 
 cyan "Building macOS..."
 build_macos
+
+cyan "Building deterministic Kun Video Editor extension package..."
+rm -f "${ROOT}"/dist/kun-video-editor-*.kunx
+npm run pack:kun-video-editor || die "Kun Video Editor extension package failed"
 
 smoke_macos_extensions
 
@@ -317,6 +342,8 @@ collect "macOS arm64 dmg" "dist/Kun-*-mac-arm64.dmg"
 collect "macOS x64 dmg" "dist/Kun-*-mac-x64.dmg"
 collect "macOS arm64 zip" "dist/Kun-*-mac-arm64.zip"
 collect "macOS x64 zip" "dist/Kun-*-mac-x64.zip"
+collect "macOS native evidence" "dist/extension-native-evidence-darwin.json"
+collect "Kun Video Editor extension" "dist/kun-video-editor-*.kunx"
 collect_optional "macOS blockmap" "dist/Kun-*-mac-*.zip.blockmap"
 
 upload_github_assets() {
@@ -396,6 +423,10 @@ gh release create "${TAG_NAME}" \
   "${GITHUB_RELEASE_FLAGS[@]}" \
   || die "gh release create failed"
 
+cyan "Verifying created release tag matches local HEAD..."
+npm run verify:manual-extension-release -- --tag "${TAG_NAME}" --version "${RELEASE_VERSION}" --tag-only \
+  || die "Created release tag does not match the local checkout"
+
 cyan "Uploading ${#ASSETS[@]} macOS asset(s) to GitHub (concurrency ${RELEASE_UPLOAD_CONCURRENCY})..."
 upload_github_assets "${TAG_NAME}" "${ASSETS[@]}"
 
@@ -403,12 +434,6 @@ if [[ "${R2_UPLOAD}" == "true" ]]; then
   cyan "Uploading macOS asset metadata to R2 (${TAG_NAME})..."
   node "${ROOT}/scripts/publish-r2.mjs" upload --platform mac --tag "${TAG_NAME}" --channel "${RELEASE_CHANNEL}" \
     || die "R2 upload failed for macOS assets"
-fi
-
-if [[ "${R2_PROMOTE}" == "true" ]]; then
-  cyan "Promoting ${TAG_NAME} as R2 latest..."
-  node "${ROOT}/scripts/publish-r2.mjs" promote --tag "${TAG_NAME}" --channel "${RELEASE_CHANNEL}" \
-    || die "R2 promote failed"
 fi
 
 if $PUBLISH; then

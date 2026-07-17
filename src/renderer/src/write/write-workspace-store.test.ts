@@ -148,4 +148,166 @@ describe('write workspace store', () => {
       fileError: 'disk full'
     })
   })
+
+  it('preserves a dirty draft and queues an external watcher write for review', async () => {
+    installDsGui({})
+    activateTextFile()
+    useWriteWorkspaceStore.getState().setFileContent('local unsaved draft')
+
+    await expect(useWriteWorkspaceStore.getState().syncActiveFileFromDisk('/tmp/write', {
+      path: '/tmp/write/draft.md',
+      content: 'assistant version on disk',
+      size: 25,
+      truncated: false,
+      animate: true,
+      reviewAsDiff: true
+    })).resolves.toBe(true)
+
+    expect(useWriteWorkspaceStore.getState()).toMatchObject({
+      fileContent: 'local unsaved draft',
+      persistedContent: 'assistant version on disk',
+      saveStatus: 'dirty',
+      reviewActive: true,
+      pendingAgentReview: {
+        workspaceRoot: '/tmp/write',
+        filePath: '/tmp/write/draft.md',
+        documentEpoch: 1,
+        nextContent: 'assistant version on disk'
+      }
+    })
+  })
+
+  it('preserves a failed local draft when an external watcher write arrives', async () => {
+    installDsGui({})
+    activateTextFile()
+    useWriteWorkspaceStore.setState({
+      fileContent: 'draft after failed save',
+      saveStatus: 'error',
+      fileError: 'disk is read-only'
+    })
+
+    await expect(useWriteWorkspaceStore.getState().syncActiveFileFromDisk('/tmp/write', {
+      path: '/tmp/write/draft.md',
+      content: 'assistant version on disk',
+      size: 25,
+      truncated: false,
+      animate: true,
+      reviewAsDiff: true
+    })).resolves.toBe(true)
+
+    expect(useWriteWorkspaceStore.getState()).toMatchObject({
+      fileContent: 'draft after failed save',
+      persistedContent: 'assistant version on disk',
+      saveStatus: 'error',
+      reviewActive: true,
+      pendingAgentReview: { nextContent: 'assistant version on disk' }
+    })
+  })
+
+  it('pauses background saves for a rich-editor conflict until explicit local resolution', async () => {
+    const writeWorkspaceFile = vi.fn(async () => ({
+      ok: true as const,
+      path: '/tmp/write/draft.md',
+      savedAt: '2026-07-12T00:00:00.000Z'
+    }))
+    installDsGui({ writeWorkspaceFile })
+    activateTextFile()
+    useWriteWorkspaceStore.getState().setFileContent('local unsaved draft')
+    await useWriteWorkspaceStore.getState().syncActiveFileFromDisk('/tmp/write', {
+      path: '/tmp/write/draft.md',
+      content: 'external disk revision',
+      size: 22,
+      truncated: false,
+      animate: true,
+      reviewAsDiff: true
+    })
+
+    await expect(useWriteWorkspaceStore.getState().flushSave('/tmp/write')).resolves.toBe(false)
+    expect(writeWorkspaceFile).not.toHaveBeenCalled()
+    expect(useWriteWorkspaceStore.getState()).toMatchObject({
+      fileContent: 'local unsaved draft',
+      persistedContent: 'external disk revision',
+      saveStatus: 'dirty',
+      reviewActive: true,
+      pendingAgentReview: { nextContent: 'external disk revision' }
+    })
+
+    await expect(useWriteWorkspaceStore.getState().flushSave('/tmp/write', {
+      resolveExternalConflict: 'keep-local'
+    })).resolves.toBe(true)
+    expect(writeWorkspaceFile).toHaveBeenCalledWith({
+      path: '/tmp/write/draft.md',
+      workspaceRoot: '/tmp/write',
+      content: 'local unsaved draft'
+    })
+    expect(useWriteWorkspaceStore.getState()).toMatchObject({
+      persistedContent: 'local unsaved draft',
+      saveStatus: 'saved',
+      reviewActive: false,
+      pendingAgentReview: null
+    })
+  })
+
+  it('does not let Save bypass an active source-editor diff review', async () => {
+    const writeWorkspaceFile = vi.fn()
+    installDsGui({ writeWorkspaceFile })
+    activateTextFile()
+    useWriteWorkspaceStore.setState({
+      fileContent: 'local review baseline',
+      persistedContent: 'external disk revision',
+      saveStatus: 'dirty',
+      reviewActive: true,
+      pendingAgentReview: null
+    })
+
+    await expect(useWriteWorkspaceStore.getState().flushSave('/tmp/write', {
+      resolveExternalConflict: 'keep-local'
+    })).resolves.toBe(false)
+    expect(writeWorkspaceFile).not.toHaveBeenCalled()
+  })
+
+  it('ignores an in-flight local-save echo without hiding newer edits', async () => {
+    const firstWrite = deferred<{ ok: true; path: string; savedAt: string }>()
+    const writeWorkspaceFile = vi.fn()
+      .mockImplementationOnce(() => firstWrite.promise)
+      .mockResolvedValue({
+        ok: true,
+        path: '/tmp/write/draft.md',
+        savedAt: '2026-07-11T00:00:02.000Z'
+      })
+    installDsGui({ writeWorkspaceFile })
+    activateTextFile()
+    useWriteWorkspaceStore.getState().setFileContent('saving draft')
+
+    const saving = useWriteWorkspaceStore.getState().flushSave('/tmp/write')
+    await vi.waitFor(() => expect(writeWorkspaceFile).toHaveBeenCalledTimes(1))
+    useWriteWorkspaceStore.getState().setFileContent('newer unsaved draft')
+
+    await expect(useWriteWorkspaceStore.getState().syncActiveFileFromDisk('/tmp/write', {
+      path: '/tmp/write/draft.md',
+      content: 'saving draft',
+      size: 12,
+      truncated: false,
+      animate: true,
+      reviewAsDiff: true
+    })).resolves.toBe(true)
+    expect(useWriteWorkspaceStore.getState()).toMatchObject({
+      fileContent: 'newer unsaved draft',
+      persistedContent: 'old content',
+      saveStatus: 'dirty',
+      pendingAgentReview: null,
+      reviewActive: false
+    })
+
+    firstWrite.resolve({
+      ok: true,
+      path: '/tmp/write/draft.md',
+      savedAt: '2026-07-11T00:00:01.000Z'
+    })
+    await expect(saving).resolves.toBe(true)
+    expect(writeWorkspaceFile.mock.calls.map(([payload]) => payload.content)).toEqual([
+      'saving draft',
+      'newer unsaved draft'
+    ])
+  })
 })

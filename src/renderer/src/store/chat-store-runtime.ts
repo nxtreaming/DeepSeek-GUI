@@ -932,6 +932,11 @@ export function buildThreadEventSink(
       resetBusyRecoveryAttempts()
       set((state) => reduce(state, { type: 'approval_received', payload: request }))
     },
+    onApprovalStatus: (event) => {
+      if (!isCurrentStream()) return
+      resetBusyRecoveryAttempts()
+      set((state) => reduce(state, { type: 'approval_status_changed', payload: event }))
+    },
     onUserInput: (request) => {
       if (!isCurrentStream()) return
       resetBusyRecoveryAttempts()

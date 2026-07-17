@@ -1,5 +1,6 @@
 import type { CoreChildRuntimeMetadataJson, CoreRuntimeEventJson, CoreTurnItemJson } from './kun-contract'
 import type {
+  ApprovalStatusPayload,
   CompactionEventPayload,
   ReviewEventPayload,
   RuntimeErrorEventPayload,
@@ -22,6 +23,7 @@ export type KunEventNormalizerDeps = {
   readyTool: (event: CoreRuntimeEventJson) => ToolEventPayload | null
   runtimeStatus: (event: CoreRuntimeEventJson) => RuntimeStatusEventPayload | null
   approvalAction: (event: CoreRuntimeEventJson) => RuntimeProjectionAction
+  approvalStatus: (event: CoreRuntimeEventJson) => ApprovalStatusPayload | null
   userInputRequest: (event: CoreRuntimeEventJson) => UserInputRequestPayload
   userInputAnswers: (answers: unknown) => UserInputAnswer[] | undefined
   compactionAction: (
@@ -108,6 +110,10 @@ export function normalizeKunRuntimeEvent(
     }
     case 'approval_requested':
       return [deps.approvalAction(event)]
+    case 'approval_resolved': {
+      const status = deps.approvalStatus(event)
+      return status ? [{ type: 'approval_status_changed', payload: status }] : []
+    }
     case 'user_input_requested':
       return [{ type: 'user_input_requested', payload: deps.userInputRequest(event) }]
     case 'user_input_resolved': {

@@ -11,12 +11,15 @@ import {
   Eye,
   ExternalLink,
   FileCode2,
+  Files,
   Loader2,
   Maximize2,
   Minimize2,
   PanelRightClose,
+  Pin,
   X
 } from 'lucide-react'
+import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { harden } from 'rehype-harden'
@@ -29,8 +32,12 @@ import {
   useState,
   type ComponentPropsWithoutRef,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactElement,
-  type ReactNode
+  type ReactNode,
+  type UIEvent as ReactUIEvent,
+  type WheelEvent as ReactWheelEvent
 } from 'react'
 import { useTranslation } from 'react-i18next'
 import { formatFilePathForDisplay } from '../lib/diff-stats'
@@ -44,6 +51,8 @@ import {
   isWorkspaceRasterImagePreviewPath,
   isWorkspaceTextPreviewPath
 } from '../lib/workspace-text-preview'
+import { workspaceFileTargetKey } from '../lib/workspace-file-target-key'
+import { readBrowserStorageItem, writeBrowserStorageItem } from '../lib/browser-storage'
 import {
   initialWriteMarkdownImageSrc,
   loadWriteMarkdownImage
@@ -56,11 +65,18 @@ type Props = {
   className?: string
   onSelectTarget?: (target: WorkspaceFileTarget) => void
   onCloseTarget?: (target: WorkspaceFileTarget) => void
+  pinnedTargetKeys?: string[]
+  preserveAcrossThreads?: boolean
+  onTogglePinnedTarget?: (target: WorkspaceFileTarget) => void
+  onCloseOtherTargets?: (target: WorkspaceFileTarget) => void
+  onTogglePreserveAcrossThreads?: () => void
   onClose: () => void
 }
 
 const COPY_RESET_MS = 1400
 const MARKDOWN_DEFAULT_ORIGIN = 'https://kun.local'
+export const PREVIEW_SCROLL_POSITIONS_KEY = 'kun.issue781.previewScrollPositions'
+const MAX_PREVIEW_SCROLL_POSITIONS = 200
 const markdownRehypePlugins = [
   rehypeRaw,
   [
@@ -103,9 +119,87 @@ function extensionBadge(path: string, language: string): string {
   return value.slice(0, 3).toUpperCase()
 }
 
-function targetKey(target: WorkspaceFileTarget | null | undefined): string {
-  if (!target?.path) return ''
-  return `${target.workspaceRoot ?? ''}\n${target.path}`.replaceAll('\\', '/').toLowerCase()
+export function targetKey(
+  target: WorkspaceFileTarget | null | undefined,
+  platform?: string
+): string {
+  return workspaceFileTargetKey(target, platform)
+}
+
+function isAbsolutePreviewPath(path: string): boolean {
+  return path.startsWith('/') || /^[a-z]:[/\\]/i.test(path) || /^[/\\]{2}[^/\\]/.test(path)
+}
+
+export function resolvedPreviewPathMatchesTarget(
+  resolvedPath: string,
+  target: WorkspaceFileTarget,
+  defaultWorkspaceRoot: string,
+  platform?: string
+): boolean {
+  const workspaceRoot = target.workspaceRoot ?? defaultWorkspaceRoot
+  const requestedPath = isAbsolutePreviewPath(target.path)
+    ? target.path
+    : `${workspaceRoot.replace(/[/\\]+$/, '')}/${target.path}`
+  return targetKey({ path: resolvedPath, workspaceRoot }, platform) ===
+    targetKey({ path: requestedPath, workspaceRoot }, platform)
+}
+
+export function nextFilePreviewTargetForWheel(
+  targets: WorkspaceFileTarget[],
+  activeTarget: WorkspaceFileTarget | null,
+  delta: number
+): WorkspaceFileTarget | null {
+  if (targets.length < 2 || delta === 0) return null
+  const activeKey = targetKey(activeTarget)
+  const activeIndex = targets.findIndex((item) => targetKey(item) === activeKey)
+  const startIndex = activeIndex >= 0 ? activeIndex : 0
+  return targets[(startIndex + (delta > 0 ? 1 : -1) + targets.length) % targets.length] ?? null
+}
+
+export function rememberPreviewScrollPosition(
+  positions: Record<string, number>,
+  key: string,
+  scrollTop: number
+): Record<string, number> {
+  if (!key || !Number.isFinite(scrollTop)) return positions
+  const next = { ...positions }
+  delete next[key]
+  next[key] = Math.max(0, scrollTop)
+  return Object.fromEntries(Object.entries(next).slice(-MAX_PREVIEW_SCROLL_POSITIONS))
+}
+
+export function parsePreviewScrollPositions(raw: string | null, platform = ''): Record<string, number> {
+  if (!raw) return {}
+  try {
+    const value: unknown = JSON.parse(raw)
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+    const entries = Object.entries(value).flatMap(([key, scrollTop]): Array<[string, number]> => {
+      if (typeof scrollTop !== 'number' || !Number.isFinite(scrollTop) || scrollTop < 0) return []
+      const parts = key.replaceAll('\\', '/').split('\n')
+      if (parts.length === 2 && parts[1]) {
+        return [[workspaceFileTargetKey({ workspaceRoot: parts[0], path: parts[1] }, platform), scrollTop]]
+      }
+      if (platform === 'win32' && parts.length === 3 && parts[2]) {
+        return [[workspaceFileTargetKey({ workspaceRoot: parts[1], path: parts[2] }, platform), scrollTop]]
+      }
+      return []
+    })
+    return Object.fromEntries(entries.slice(-MAX_PREVIEW_SCROLL_POSITIONS))
+  } catch {
+    return {}
+  }
+}
+
+function readPreviewScrollPositions(): Record<string, number> {
+  const platform = typeof window !== 'undefined' ? window.kunGui?.platform ?? '' : ''
+  return parsePreviewScrollPositions(readBrowserStorageItem(PREVIEW_SCROLL_POSITIONS_KEY), platform)
+}
+
+function persistPreviewScrollPositions(positions: Record<string, number>): void {
+  writeBrowserStorageItem(
+    PREVIEW_SCROLL_POSITIONS_KEY,
+    JSON.stringify(Object.fromEntries(Object.entries(positions).slice(-MAX_PREVIEW_SCROLL_POSITIONS)))
+  )
 }
 
 function isMarkdownPreviewPath(path: string): boolean {
@@ -199,6 +293,11 @@ export function WorkspaceFilePreviewPanel({
   className,
   onSelectTarget,
   onCloseTarget,
+  pinnedTargetKeys = [],
+  preserveAcrossThreads = false,
+  onTogglePinnedTarget,
+  onCloseOtherTargets,
+  onTogglePreserveAcrossThreads,
   onClose
 }: Props): ReactElement {
   const { t } = useTranslation('common')
@@ -209,9 +308,23 @@ export function WorkspaceFilePreviewPanel({
   const [markdownRendered, setMarkdownRendered] = useState(true)
   const [svgRendered, setSvgRendered] = useState(true)
   const [readingMode, setReadingMode] = useState(false)
+  const [tabMenu, setTabMenu] = useState<{
+    target: WorkspaceFileTarget
+    x: number
+    y: number
+  } | null>(null)
   const [highlightHtml, setHighlightHtml] = useState(() => renderFallbackCodeHtml(''))
   const scrollRef = useRef<HTMLDivElement>(null)
+  const scrollPositionsRef = useRef(readPreviewScrollPositions())
+  const tabMenuRef = useRef<HTMLDivElement>(null)
+  const tabMenuTriggerRef = useRef<HTMLElement | null>(null)
+  const tabButtonRefs = useRef(new Map<string, HTMLButtonElement>())
   const copyResetRef = useRef<number | null>(null)
+  const activeTargetKey = targetKey(target)
+  const visibleTargets = openTargets.length ? openTargets : target ? [target] : []
+  const visibleTargetKeySignature = visibleTargets.map((item) => targetKey(item)).join('\0')
+  const pinnedTargetKeySet = useMemo(() => new Set(pinnedTargetKeys), [pinnedTargetKeys])
+  const tabActionsEnabled = Boolean(onTogglePinnedTarget || onCloseOtherTargets)
 
   useEffect(() => {
     if (!target) {
@@ -305,11 +418,111 @@ export function WorkspaceFilePreviewPanel({
   useEffect(() => {
     if (!readingMode) return
     const exitReadingMode = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setReadingMode(false)
+      if (event.key === 'Escape' && !tabMenu) setReadingMode(false)
     }
     document.addEventListener('keydown', exitReadingMode)
     return () => document.removeEventListener('keydown', exitReadingMode)
-  }, [readingMode])
+  }, [readingMode, tabMenu])
+
+  useEffect(() => {
+    if (!tabMenu) return
+    const firstItem = tabMenuRef.current?.querySelector<HTMLButtonElement>('[role^="menuitem"]')
+    firstItem?.focus()
+    const closeMenu = (event: PointerEvent): void => {
+      if (typeof Node !== 'undefined' && event.target instanceof Node && tabMenuRef.current?.contains(event.target)) {
+        return
+      }
+      setTabMenu(null)
+    }
+    const closeMenuWithKeyboard = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setTabMenu(null)
+      tabMenuTriggerRef.current?.focus()
+    }
+    document.addEventListener('pointerdown', closeMenu)
+    document.addEventListener('keydown', closeMenuWithKeyboard)
+    return () => {
+      document.removeEventListener('pointerdown', closeMenu)
+      document.removeEventListener('keydown', closeMenuWithKeyboard)
+    }
+  }, [tabMenu])
+
+  useEffect(() => {
+    if (!tabMenu) return
+    const visibleKeys = new Set(visibleTargetKeySignature.split('\0').filter(Boolean))
+    if (!visibleKeys.has(targetKey(tabMenu.target))) setTabMenu(null)
+  }, [tabMenu, visibleTargetKeySignature])
+
+  useEffect(() => {
+    return () => persistPreviewScrollPositions(scrollPositionsRef.current)
+  }, [activeTargetKey])
+
+  useEffect(() => {
+    if (!activeTargetKey || (!result?.ok && !imageResult?.ok)) return
+    if (result?.ok && result.line) return
+    const frame = window.requestAnimationFrame(() => {
+      const stored = scrollPositionsRef.current[activeTargetKey]
+      if (typeof stored === 'number' && scrollRef.current) scrollRef.current.scrollTop = stored
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [activeTargetKey, imageResult, markdownRendered, result, svgRendered])
+
+  const handlePreviewScroll = (event: ReactUIEvent<HTMLDivElement>): void => {
+    if (!activeTargetKey) return
+    scrollPositionsRef.current = rememberPreviewScrollPosition(
+      scrollPositionsRef.current,
+      activeTargetKey,
+      event.currentTarget.scrollTop
+    )
+  }
+
+  const handleTabWheel = (event: ReactWheelEvent<HTMLDivElement>): void => {
+    const delta = event.deltaY || event.deltaX
+    const nextTarget = nextFilePreviewTargetForWheel(visibleTargets, target, delta)
+    if (!nextTarget || !onSelectTarget) return
+    event.preventDefault()
+    onSelectTarget(nextTarget)
+  }
+
+  const openTabMenu = (
+    event: ReactMouseEvent<HTMLElement> | ReactKeyboardEvent<HTMLButtonElement>,
+    item: WorkspaceFileTarget,
+    position?: { x: number; y: number }
+  ): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    tabMenuTriggerRef.current = event.currentTarget
+    const rect = event.currentTarget.getBoundingClientRect()
+    const requestedX = position?.x ?? ('clientX' in event ? event.clientX : rect.left)
+    const requestedY = position?.y ?? ('clientY' in event ? event.clientY : rect.bottom)
+    setTabMenu({
+      target: item,
+      x: Math.max(8, Math.min(requestedX, window.innerWidth - 200)),
+      y: Math.max(8, Math.min(requestedY, window.innerHeight - 112))
+    })
+  }
+
+  const handleTabKeyDown = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    item: WorkspaceFileTarget,
+    index: number
+  ): void => {
+    if (tabActionsEnabled && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
+      const rect = event.currentTarget.getBoundingClientRect()
+      openTabMenu(event, item, { x: rect.left, y: rect.bottom })
+      return
+    }
+    let nextTarget: WorkspaceFileTarget | undefined
+    if (event.key === 'ArrowRight') nextTarget = visibleTargets[(index + 1) % visibleTargets.length]
+    if (event.key === 'ArrowLeft') nextTarget = visibleTargets[(index - 1 + visibleTargets.length) % visibleTargets.length]
+    if (event.key === 'Home') nextTarget = visibleTargets[0]
+    if (event.key === 'End') nextTarget = visibleTargets.at(-1)
+    if (!nextTarget || !onSelectTarget) return
+    event.preventDefault()
+    onSelectTarget(nextTarget)
+    window.requestAnimationFrame(() => tabButtonRefs.current.get(targetKey(nextTarget))?.focus())
+  }
 
   const displayPath = useMemo(() => {
     const root = target?.workspaceRoot ?? workspaceRoot
@@ -321,7 +534,6 @@ export function WorkspaceFilePreviewPanel({
     if (result?.ok) return languageFromFilePath(result.path)
     return target?.path ? languageFromFilePath(target.path) : ''
   }, [result, target])
-  const activeTargetKey = targetKey(target)
   const isMarkdownFile = isMarkdownPreviewPath(result?.ok ? result.path : target?.path ?? '')
   const isSvgFile = isSvgPreviewPath(result?.ok ? result.path : target?.path ?? '')
   const svgDataUrl = useMemo(
@@ -364,25 +576,34 @@ export function WorkspaceFilePreviewPanel({
     }
   }, [result, language])
 
-  const openInEditor = (): void => {
-    const path = result?.ok ? result.path : target?.path
+  const openTargetInEditor = (targetToOpen: WorkspaceFileTarget | null): void => {
+    const isActive = targetKey(targetToOpen) === activeTargetKey
+    const resultMatchesTarget = Boolean(
+      targetToOpen &&
+      isActive &&
+      result?.ok &&
+      resolvedPreviewPathMatchesTarget(result.path, targetToOpen, workspaceRoot)
+    )
+    const path = resultMatchesTarget && result?.ok ? result.path : targetToOpen?.path
     if (!path) return
     void openWorkspacePathInEditor(
       {
         path,
-        line: result?.ok ? result.line : target?.line,
-        column: result?.ok ? result.column : target?.column
+        line: resultMatchesTarget && result?.ok ? result.line : targetToOpen?.line,
+        column: resultMatchesTarget && result?.ok ? result.column : targetToOpen?.column
       },
-      target?.workspaceRoot ?? workspaceRoot
+      targetToOpen?.workspaceRoot ?? workspaceRoot
     ).then((next) => {
       if (!next.ok) {
         void window.kunGui?.logError?.('editor-open', 'Failed to open previewed file', {
           message: next.message,
-          target
+          target: targetToOpen
         })?.catch(() => undefined)
       }
     })
   }
+
+  const openInEditor = (): void => openTargetInEditor(target)
 
   const copyContent = async (): Promise<void> => {
     if (!result?.ok || !navigator?.clipboard?.writeText) return
@@ -411,9 +632,15 @@ export function WorkspaceFilePreviewPanel({
         className={`ds-no-drag ds-code-sidebar flex min-h-0 flex-col border-l border-ds-border-muted ${readingMode ? 'is-reading' : ''} ${className ?? ''}`}
       >
       <div className="ds-code-sidebar-topbar">
-        <div className="ds-code-sidebar-tabs" role="tablist" aria-label={t('filePreviewOpenFiles')}>
-          {(openTargets.length ? openTargets : target ? [target] : []).map((item) => {
+        <div
+          className="ds-code-sidebar-tabs"
+          role="tablist"
+          aria-label={t('filePreviewOpenFiles')}
+          onWheel={handleTabWheel}
+        >
+          {visibleTargets.map((item, index) => {
             const active = targetKey(item) === activeTargetKey
+            const pinned = pinnedTargetKeySet.has(targetKey(item))
             const itemPath = item.path
             const itemRoot = item.workspaceRoot ?? workspaceRoot
             const itemLabel = fileNameFromPath(itemPath)
@@ -423,35 +650,45 @@ export function WorkspaceFilePreviewPanel({
               <div
                 key={targetKey(item)}
                 data-kun-preview-key={targetKey(item)}
-                role="tab"
-                tabIndex={0}
-                aria-selected={active}
-                onDoubleClick={openInEditor}
-                onClick={() => onSelectTarget?.(item)}
+                role="presentation"
                 className={`ds-code-sidebar-tab ${active ? 'is-active' : ''}`}
-                title={itemTitle}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter' && event.key !== ' ') return
-                  event.preventDefault()
-                  onSelectTarget?.(item)
-                }}
               >
-                <span className="ds-code-sidebar-file-badge">{itemBadge}</span>
-                <span className="min-w-0 truncate">{itemLabel}</span>
+                <button
+                  ref={(element) => {
+                    const key = targetKey(item)
+                    if (element) tabButtonRefs.current.set(key, element)
+                    else tabButtonRefs.current.delete(key)
+                  }}
+                  type="button"
+                  role="tab"
+                  tabIndex={active ? 0 : -1}
+                  aria-selected={active}
+                  aria-label={pinned ? t('filePreviewPinnedTab', { file: itemLabel }) : itemLabel}
+                  className="ds-code-sidebar-tab-selector"
+                  title={itemTitle}
+                  onClick={() => onSelectTarget?.(item)}
+                  onDoubleClick={() => openTargetInEditor(item)}
+                  onContextMenu={tabActionsEnabled ? (event) => openTabMenu(event, item) : undefined}
+                  onKeyDown={(event) => handleTabKeyDown(event, item, index)}
+                >
+                  {pinned ? (
+                    <Pin
+                      aria-hidden="true"
+                      className="h-3 w-3 shrink-0"
+                      style={{ color: 'var(--ds-accent)' }}
+                      strokeWidth={1.8}
+                    />
+                  ) : null}
+                  <span className="ds-code-sidebar-file-badge">{itemBadge}</span>
+                  <span className="min-w-0 truncate">{itemLabel}</span>
+                </button>
                 {onCloseTarget ? (
                   <button
                     type="button"
                     aria-label={t('filePreviewCloseTab', { file: itemLabel })}
                     title={t('filePreviewCloseTab', { file: itemLabel })}
                     className="ds-code-sidebar-tab-close"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onCloseTarget(item)
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Enter' && event.key !== ' ') return
-                      event.preventDefault()
-                      event.stopPropagation()
+                    onClick={() => {
                       onCloseTarget(item)
                     }}
                   >
@@ -461,20 +698,37 @@ export function WorkspaceFilePreviewPanel({
               </div>
             )
           })}
-          {!openTargets.length && !target ? (
+          {!visibleTargets.length ? (
             <div
-              role="tab"
-              aria-selected="false"
+              role="presentation"
               className="ds-code-sidebar-tab"
               title={t('filePreviewEmpty')}
             >
-              <span className="ds-code-sidebar-file-badge">{badge}</span>
-              <span className="truncate">{currentFileName}</span>
+              <button type="button" role="tab" aria-selected="false" disabled className="ds-code-sidebar-tab-selector">
+                <span className="ds-code-sidebar-file-badge">{badge}</span>
+                <span className="truncate">{currentFileName}</span>
+              </button>
             </div>
           ) : null}
         </div>
 
         <div className="ds-code-sidebar-actions">
+          {onTogglePreserveAcrossThreads ? (
+            <button
+              type="button"
+              onClick={onTogglePreserveAcrossThreads}
+              className="ds-code-sidebar-icon-button"
+              title={t('filePreviewPreserveAcrossThreads')}
+              aria-label={t('filePreviewPreserveAcrossThreads')}
+              aria-pressed={preserveAcrossThreads}
+            >
+              <Files
+                className="h-4 w-4"
+                style={preserveAcrossThreads ? { color: 'var(--ds-accent)' } : undefined}
+                strokeWidth={1.75}
+              />
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => setReadingMode((value) => !value)}
@@ -604,7 +858,11 @@ export function WorkspaceFilePreviewPanel({
             {t('filePreviewLoading')}
           </div>
         ) : imageResult?.ok ? (
-          <div className="ds-file-preview-image min-h-0 flex-1 overflow-auto p-5">
+          <div
+            ref={scrollRef}
+            onScroll={handlePreviewScroll}
+            className="ds-file-preview-image min-h-0 flex-1 overflow-auto p-5"
+          >
             <img
               src={imageResult.dataUrl}
               alt={currentFileName}
@@ -619,7 +877,11 @@ export function WorkspaceFilePreviewPanel({
               </div>
             ) : null}
             {isSvgFile && svgRendered && !result.truncated ? (
-              <div className="ds-file-preview-svg min-h-0 flex-1 overflow-auto p-5">
+              <div
+                ref={scrollRef}
+                onScroll={handlePreviewScroll}
+                className="ds-file-preview-svg min-h-0 flex-1 overflow-auto p-5"
+              >
                 <img
                   src={svgDataUrl}
                   alt={currentFileName}
@@ -627,7 +889,11 @@ export function WorkspaceFilePreviewPanel({
                 />
               </div>
             ) : isMarkdownFile && markdownRendered ? (
-              <div className="ds-file-preview-markdown min-h-0 flex-1 overflow-auto px-5 py-4">
+              <div
+                ref={scrollRef}
+                onScroll={handlePreviewScroll}
+                className="ds-file-preview-markdown min-h-0 flex-1 overflow-auto px-5 py-4"
+              >
                 <div className="ds-markdown min-h-full text-ds-ink">
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
@@ -663,6 +929,7 @@ export function WorkspaceFilePreviewPanel({
             ) : (
               <div
                 ref={scrollRef}
+                onScroll={handlePreviewScroll}
                 className="ds-file-preview-scroll min-h-0 flex-1 overflow-auto font-mono text-[12px] leading-[22px] text-ds-ink"
               >
                 <div
@@ -701,6 +968,60 @@ export function WorkspaceFilePreviewPanel({
         )}
       </div>
       </aside>
+      {tabMenu && typeof document !== 'undefined' ? createPortal(
+        <div
+          ref={tabMenuRef}
+          role="menu"
+          aria-label={t('filePreviewTabActions')}
+          className="fixed z-[10000] min-w-[184px] rounded-lg border border-ds-border bg-ds-card p-1 shadow-xl"
+          style={{ left: tabMenu.x, top: tabMenu.y }}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+            event.preventDefault()
+            const items = Array.from(
+              event.currentTarget.querySelectorAll<HTMLButtonElement>('[role^="menuitem"]:not(:disabled)')
+            )
+            if (items.length === 0) return
+            const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement)
+            const direction = event.key === 'ArrowDown' ? 1 : -1
+            items[(currentIndex + direction + items.length) % items.length]?.focus()
+          }}
+        >
+          {onTogglePinnedTarget ? (
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={pinnedTargetKeySet.has(targetKey(tabMenu.target))}
+              className="block w-full rounded-md px-2.5 py-2 text-left text-[12px] text-ds-ink hover:bg-ds-hover"
+              onClick={() => {
+                onTogglePinnedTarget(tabMenu.target)
+                setTabMenu(null)
+                window.requestAnimationFrame(() => tabMenuTriggerRef.current?.focus())
+              }}
+            >
+              {pinnedTargetKeySet.has(targetKey(tabMenu.target))
+                ? t('filePreviewUnpinTab')
+                : t('filePreviewPinTab')}
+            </button>
+          ) : null}
+          {onCloseOtherTargets ? (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={visibleTargets.length < 2}
+              className="block w-full rounded-md px-2.5 py-2 text-left text-[12px] text-ds-ink hover:bg-ds-hover disabled:cursor-default disabled:opacity-45"
+              onClick={() => {
+                onCloseOtherTargets(tabMenu.target)
+                setTabMenu(null)
+                window.requestAnimationFrame(() => tabMenuTriggerRef.current?.focus())
+              }}
+            >
+              {t('filePreviewCloseOtherTabs')}
+            </button>
+          ) : null}
+        </div>,
+        document.body
+      ) : null}
     </>
   )
 }

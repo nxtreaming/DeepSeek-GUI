@@ -3,6 +3,7 @@ import { useWriteWorkspaceStore, type WriteWorkspaceState } from '../../write/wr
 import { writeDocumentContextMatches } from '../../write/write-document-context'
 import { startWriteWorkspaceFileWatch } from '../../write/write-file-watch'
 import type { WriteMarkdownEditorHandle } from './WriteMarkdownEditor'
+import i18n from '../../i18n'
 
 type PendingAgentReview = NonNullable<WriteWorkspaceState['pendingAgentReview']>
 
@@ -11,6 +12,13 @@ export function pendingWriteAgentReviewMatches(
   review: PendingAgentReview
 ): boolean {
   return writeDocumentContextMatches(state, review)
+}
+
+export function canApplyPendingWriteAgentReviewDirectly(
+  state: Pick<WriteWorkspaceState, 'workspaceRoot' | 'activeFilePath' | 'documentEpoch' | 'saveStatus'>,
+  review: PendingAgentReview
+): boolean {
+  return pendingWriteAgentReviewMatches(state, review) && state.saveStatus === 'saved'
 }
 
 type UseWriteWorkspaceLifecycleOptions = {
@@ -26,6 +34,7 @@ type UseWriteWorkspaceLifecycleOptions = {
   readOnly: boolean
   reviewActive: boolean
   pendingAgentReview: PendingAgentReview | null
+  reviewSurfaceKey: string
   saveTimerRef: MutableRefObject<number | null>
   markdownHandleRef: MutableRefObject<WriteMarkdownEditorHandle | null>
   flushSave: WriteWorkspaceState['flushSave']
@@ -50,6 +59,7 @@ export function useWriteWorkspaceLifecycle({
   readOnly,
   reviewActive,
   pendingAgentReview,
+  reviewSurfaceKey,
   saveTimerRef,
   markdownHandleRef,
   flushSave,
@@ -66,8 +76,8 @@ export function useWriteWorkspaceLifecycle({
   useEffect(() => {
     if (!pendingAgentReview) return
     const current = useWriteWorkspaceStore.getState()
-    clearPendingAgentReview()
     if (!pendingWriteAgentReviewMatches(current, pendingAgentReview)) {
+      clearPendingAgentReview()
       if (!markdownHandleRef.current?.isDiffReviewActive()) setReviewActive(false)
       return
     }
@@ -76,9 +86,29 @@ export function useWriteWorkspaceLifecycle({
       original: baseline,
       nextDoc: pendingAgentReview.nextContent
     }) ?? false
-    if (!started && pendingWriteAgentReviewMatches(useWriteWorkspaceStore.getState(), pendingAgentReview)) {
-      // Rich mode / no source editor / identical content: apply directly only
-      // while the originating document epoch is still current.
+    if (started) {
+      clearPendingAgentReview()
+      return
+    }
+    if (!started) {
+      const latest = useWriteWorkspaceStore.getState()
+      if (!pendingWriteAgentReviewMatches(latest, pendingAgentReview)) {
+        clearPendingAgentReview()
+        setReviewActive(false)
+        return
+      }
+      if (!canApplyPendingWriteAgentReviewDirectly(latest, pendingAgentReview)) {
+        // Rich mode has no line-diff surface. Preserve the dirty/error draft
+        // and keep reviewActive set so background autosave stays paused. The
+        // pending snapshot also makes normal flushes fail closed; an explicit
+        // Save can resolve the conflict in favor of the local draft.
+        setFileError(i18n.t('common:writeExternalChangeConflict'))
+        setReviewActive(true)
+        return
+      }
+      // No source editor (or an identical clean document): applying is safe
+      // only while the originating saved document epoch is still current.
+      clearPendingAgentReview()
       setFileContent(pendingAgentReview.nextContent)
       setReviewActive(false)
     }
@@ -86,7 +116,9 @@ export function useWriteWorkspaceLifecycle({
     clearPendingAgentReview,
     markdownHandleRef,
     pendingAgentReview,
+    reviewSurfaceKey,
     setFileContent,
+    setFileError,
     setReviewActive
   ])
 

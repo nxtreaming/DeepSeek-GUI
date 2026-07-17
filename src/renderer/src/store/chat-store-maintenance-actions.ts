@@ -931,7 +931,7 @@ export function createMaintenanceActions(
       if (outcome === 'cancelled') {
         set((s) => ({
           blocks: s.blocks.map((b) =>
-            b.id === blockId && b.kind === 'approval'
+            b.id === blockId && b.kind === 'approval' && b.status === 'submitting'
               ? { ...b, status: 'pending' as const, errorMessage: undefined }
               : b
           )
@@ -940,12 +940,16 @@ export function createMaintenanceActions(
       }
       set((s) => ({
         blocks: s.blocks.map((b) =>
-          b.id === blockId && b.kind === 'approval'
+          b.id === blockId && b.kind === 'approval' && b.status === 'submitting'
             ? { ...b, status: decision === 'allow' ? ('allowed' as const) : ('denied' as const) }
             : b
         )
       }))
     } catch (e) {
+      const stillSubmitting = get().blocks.some((b) =>
+        b.id === blockId && b.kind === 'approval' && b.status === 'submitting'
+      )
+      if (!stillSubmitting) return
       const msg = formatRuntimeError(e)
       void window.kunGui.logError('approval', 'Failed to submit approval decision', {
         message: msg,
@@ -957,7 +961,7 @@ export function createMaintenanceActions(
           ? { route: 'settings' as const, settingsSection: 'agents' as const }
           : {}),
         blocks: s.blocks.map((b) =>
-          b.id === blockId && b.kind === 'approval'
+          b.id === blockId && b.kind === 'approval' && b.status === 'submitting'
             ? { ...b, status: 'error' as const, errorMessage: msg }
             : b
         )

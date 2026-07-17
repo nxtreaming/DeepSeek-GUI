@@ -68,6 +68,39 @@ npm run benchmark:replay -- --suite benchmarks/agent-core.json --repeat 2 \
   --baseline replay-baseline.json --output replay-current.json --fail-on-regression
 ```
 
+Use a comparison policy when providers or local models need different variance tolerances:
+
+```bash
+npm run benchmark:replay -- --suite benchmarks/agent-core.json \
+  --baseline replay-baseline.json --comparison-policy replay-policy.json \
+  --output replay-current.json --fail-on-regression
+```
+
+```json
+{
+  "defaults": {
+    "maxSuccessRateDrop": 0,
+    "maxTtftRelativeIncrease": 0.2,
+    "maxTtftAbsoluteIncreaseMs": 300
+  },
+  "models": {
+    "local-model": {
+      "maxTtftRelativeIncrease": 0.5,
+      "maxTtftAbsoluteIncreaseMs": 800
+    }
+  }
+}
+```
+
+Reports must use the same suite, task iterations, repeat count, concurrency, thread-retention mode, and tag. Model changes are rejected
+unless the policy sets `allowModelChange` to `true`. Each run records its effective task/suite/runtime model, so
+mixed-model suites resolve and evaluate thresholds separately for every current model. New reports also include a
+stable hash of normalized prompts, expectations, timeouts, provider/reasoning selections, and non-model suite defaults; regenerate
+legacy baselines that do not contain this hash before comparing them with a new report.
+
+Peak RSS is a process-lifetime metric, so its regression thresholds are evaluated once from policy `defaults` for
+the whole suite. It is intentionally not attributed to individual models in a mixed-model run.
+
 Replay threads always use the `read-only` sandbox and disable interactive input. Reports include success rate,
 TTFT, full latency, tool time, SSE delivery delay, token/cache/cost counters, and Kun process peak RSS. The runtime
 token is accepted only through `KUN_RUNTIME_TOKEN`, so it does not leak through process arguments.
@@ -475,6 +508,28 @@ and replay exactly as before. If a constraint should become
 cross-thread recall, create an explicit memory record through the
 GUI memory review surface or the `memory_create` tool. If it should
 stay local to one thread, leave it as a pinned constraint.
+
+## Agent observability
+
+Sanitized agent spans can stay in the default local JSONL file or be
+exported to an OpenTelemetry collector with OTLP/HTTP JSON. The OTLP
+exporter is opt-in, bounded, batched, and runs outside the runtime event
+persistence path. Runtime shutdown drains queued batches within the configured
+export timeout and leaves no background retry timer behind. Set the standard variables below before starting Kun:
+
+```sh
+OTEL_TRACES_EXPORTER=otlp
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+```
+
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is used as-is when set. Otherwise
+Kun appends `/v1/traces` to `OTEL_EXPORTER_OTLP_ENDPOINT`. Standard
+`OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TIMEOUT` values are
+also supported, including their trace-specific variants. Prompts,
+assistant text, tool arguments, tool output, commands, and arbitrary
+error messages are excluded by default. `includeSensitiveContent` must
+be explicitly enabled before arbitrary error messages are exported.
 
 ## Troubleshooting
 

@@ -79,7 +79,8 @@ jobs:
       - name: Install Linux packaging dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libarchive-tools rpm build-essential python3 xvfb xauth util-linux
+          sudo apt-get install -y --no-install-recommends libarchive-tools rpm build-essential python3 xvfb xauth util-linux ffmpeg
+          ffmpeg -hide_banner -filters 2>&1 | grep -Eq '[[:space:]]drawtext[[:space:]]'
 
       - name: Install root dependencies
         run: npm ci
@@ -95,6 +96,19 @@ jobs:
 
       - name: Smoke packaged Extension Node runtime
         run: npm run smoke:packaged-extensions -- --resources dist/linux-unpacked/resources
+
+      - name: Smoke host-native FFmpeg broker (fail closed)
+        env:
+          KUN_RUN_MEDIA_SMOKE: '1'
+        run: npm run smoke:extension-native-media
+
+      - name: Build deterministic Kun Video Editor extension package
+        run: npm run pack:kun-video-editor
+
+      - name: Smoke packaged Kun Video Editor native workflow
+        run: >
+          npm run smoke:packaged-video-editor-native --
+          --archive dist/kun-video-editor-0.4.4.kunx
 
       - name: Prepare and verify Linux user namespace sandbox
         run: |
@@ -114,6 +128,8 @@ jobs:
         run: npm run smoke:packaged-extension-appimage
 
       - name: Record Linux native validation evidence
+        env:
+          KUN_EVIDENCE_COMMIT: ${{ github.sha }}
         run: npm run evidence:extension-native
 
       - name: Upload Linux package
@@ -126,6 +142,7 @@ jobs:
             dist/Kun-*-linux-x86_64.AppImage
             dist/Kun-*-linux-x86_64.AppImage.blockmap
             dist/extension-native-evidence-linux.json
+            dist/kun-video-editor-*.kunx
 
   package-macos:
     name: Ad-hoc macOS packaged validation (PR)
@@ -149,6 +166,15 @@ jobs:
             package-lock.json
             kun/package-lock.json
 
+      - name: Install host-native FFmpeg
+        run: |
+          brew install ffmpeg-full
+          ffmpeg_bin="$(brew --prefix ffmpeg-full)/bin"
+          "$ffmpeg_bin/ffmpeg" -hide_banner -filters 2>&1 | grep -Eq '[[:space:]]drawtext[[:space:]]'
+          echo "$ffmpeg_bin" >> "$GITHUB_PATH"
+          echo "KUN_FFMPEG_PATH=$ffmpeg_bin/ffmpeg" >> "$GITHUB_ENV"
+          echo "KUN_FFPROBE_PATH=$ffmpeg_bin/ffprobe" >> "$GITHUB_ENV"
+
       - name: Install root dependencies
         run: npm ci
 
@@ -164,10 +190,20 @@ jobs:
       - name: Smoke packaged Extension Node runtime (macOS arm64)
         run: npm run smoke:packaged-extensions -- --resources dist/mac-arm64/Kun.app/Contents/Resources
 
+      - name: Smoke host-native FFmpeg broker (fail closed)
+        env:
+          KUN_RUN_MEDIA_SMOKE: '1'
+        run: npm run smoke:extension-native-media
+
+      - name: Smoke packaged Kun Video Editor native workflow
+        run: npm run smoke:packaged-video-editor-native
+
       - name: Smoke packaged Extension desktop Chromium (host-native macOS)
         run: npm run smoke:packaged-extension-desktop
 
       - name: Record macOS native validation evidence
+        env:
+          KUN_EVIDENCE_COMMIT: ${{ github.sha }}
         run: npm run evidence:extension-native
 
       - name: Upload ad-hoc macOS PR packages
@@ -203,6 +239,19 @@ jobs:
             package-lock.json
             kun/package-lock.json
 
+      - name: Install host-native FFmpeg
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue) -or -not (Get-Command ffprobe.exe -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg --yes --no-progress
+          }
+          $ffmpegPath = (Get-Command ffmpeg.exe).Source
+          if ((& $ffmpegPath -hide_banner -filters 2>&1 | Out-String) -notmatch '\sdrawtext\s') {
+            throw 'Installed FFmpeg does not provide the required drawtext filter.'
+          }
+          "KUN_FFMPEG_PATH=$ffmpegPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "KUN_FFPROBE_PATH=$((Get-Command ffprobe.exe).Source)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Install root dependencies
         run: npm ci
 
@@ -215,10 +264,20 @@ jobs:
       - name: Smoke packaged Extension Node runtime (win-unpacked)
         run: npm run smoke:packaged-extensions -- --resources dist/win-unpacked/resources
 
+      - name: Smoke host-native FFmpeg broker (fail closed)
+        env:
+          KUN_RUN_MEDIA_SMOKE: '1'
+        run: npm run smoke:extension-native-media
+
+      - name: Smoke packaged Kun Video Editor native workflow
+        run: npm run smoke:packaged-video-editor-native
+
       - name: Smoke packaged Extension desktop Chromium (host-native Windows)
         run: npm run smoke:packaged-extension-desktop
 
       - name: Record Windows native validation evidence
+        env:
+          KUN_EVIDENCE_COMMIT: ${{ github.sha }}
         run: npm run evidence:extension-native
 
       - name: Upload Windows PR package

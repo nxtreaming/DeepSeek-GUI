@@ -28,6 +28,7 @@ import {
 import type { TFunction } from 'i18next'
 import type { ComposerFileReference } from '../../lib/composer-file-references'
 import {
+  COMPOSER_FILE_REFERENCE_DRAG_MIME,
   formatComposerFileMentionToken,
   relativeWorkspacePath
 } from '../../lib/composer-file-references'
@@ -106,7 +107,8 @@ function entryReference(entry: WorkspaceEntry, workspaceRoot: string): ChatFileT
     path: entry.path,
     relativePath,
     name: entry.name,
-    type: entry.type
+    type: entry.type,
+    workspaceRoot
   }
 }
 
@@ -342,7 +344,7 @@ export function ChatFileTreePanel({
     const token = formatComposerFileMentionToken(reference.relativePath, reference.type === 'directory')
     event.dataTransfer.effectAllowed = 'copy'
     event.dataTransfer.setData('text/plain', `${token} `)
-    event.dataTransfer.setData('application/x-kun-file-reference', JSON.stringify(reference))
+    event.dataTransfer.setData(COMPOSER_FILE_REFERENCE_DRAG_MIME, JSON.stringify(reference))
   }
 
   const copyEntryPath = async (entry: WorkspaceEntry, mode: 'absolute' | 'relative'): Promise<void> => {

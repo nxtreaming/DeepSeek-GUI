@@ -392,6 +392,16 @@ describe('cli', () => {
     expect(parsed.storage.backend).toBe('file')
   })
 
+  it('accepts the product-owned bundled extension directory from CLI or environment', () => {
+    expect(parseServeOptions([
+      '--data-dir=/srv/ca',
+      '--bundled-extensions-dir=/opt/kun/bundled-extensions'
+    ]).bundledExtensionsDir).toBe('/opt/kun/bundled-extensions')
+    expect(parseServeOptions(['--data-dir=/srv/ca'], {
+      KUN_BUNDLED_EXTENSIONS_DIR: '/Applications/Kun/resources/bundled-extensions'
+    }).bundledExtensionsDir).toBe('/Applications/Kun/resources/bundled-extensions')
+  })
+
   it('enables sanitized observability from env and output flag', () => {
     const parsed = parseServeOptions([
       '--data-dir=/srv/ca',
@@ -404,6 +414,106 @@ describe('cli', () => {
       outputPath: 'otel/spans.jsonl',
       includeSensitiveContent: false
     })
+  })
+
+  it('enables the OTLP HTTP JSON exporter from standard environment variables', () => {
+    const parsed = parseServeOptions(['--data-dir=/srv/ca'], {
+      OTEL_TRACES_EXPORTER: 'otlp',
+      OTEL_EXPORTER_OTLP_PROTOCOL: 'http/json',
+      OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example/otel',
+      OTEL_EXPORTER_OTLP_HEADERS: 'api-key=hello%20world',
+      OTEL_EXPORTER_OTLP_TIMEOUT: '2500'
+    })
+    expect(parsed.observability).toEqual({
+      enabled: true,
+      exporter: 'otlp-http-json',
+      endpoint: 'https://collector.example/otel/v1/traces',
+      headers: { 'api-key': 'hello world' },
+      timeoutMs: 2500,
+      includeSensitiveContent: false
+    })
+  })
+
+  it('treats empty trace-specific OTLP variables as unset and falls back to common values', () => {
+    const parsed = parseServeOptions(['--data-dir=/srv/ca'], {
+      OTEL_TRACES_EXPORTER: 'otlp',
+      OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: ' ',
+      OTEL_EXPORTER_OTLP_PROTOCOL: 'http/json',
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: '',
+      OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example/otel',
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: '   ',
+      OTEL_EXPORTER_OTLP_HEADERS: 'api-key=common',
+      OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: '',
+      OTEL_EXPORTER_OTLP_TIMEOUT: '3000'
+    })
+
+    expect(parsed.observability).toEqual({
+      enabled: true,
+      exporter: 'otlp-http-json',
+      endpoint: 'https://collector.example/otel/v1/traces',
+      headers: { 'api-key': 'common' },
+      timeoutMs: 3000,
+      includeSensitiveContent: false
+    })
+  })
+
+  it('rejects non-HTTP observability endpoints', () => {
+    const base = parseServeOptions(['--data-dir=/srv/ca'])
+
+    expect(() => validateServeOptions({
+      ...base,
+      observability: {
+        enabled: true,
+        exporter: 'otlp-http-json',
+        endpoint: 'file:///tmp/traces'
+      }
+    })).toThrow()
+    expect(validateServeOptions({
+      ...base,
+      observability: {
+        enabled: true,
+        exporter: 'otlp-http-json',
+        endpoint: 'https://collector.example/v1/traces'
+      }
+    }).observability?.endpoint).toBe('https://collector.example/v1/traces')
+  })
+
+  it('applies CLI and standard OTLP environment precedence over config', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kun-observability-config-'))
+    try {
+      const configPath = join(dir, 'kun.config.json')
+      await writeFile(configPath, JSON.stringify({
+        serve: {
+          dataDir: join(dir, 'data'),
+          observability: {
+            enabled: false,
+            exporter: 'jsonl',
+            endpoint: 'https://config.example/v1/traces'
+          }
+        }
+      }))
+      const env = {
+        OTEL_TRACES_EXPORTER: 'otlp',
+        OTEL_EXPORTER_OTLP_PROTOCOL: 'http/json',
+        OTEL_EXPORTER_OTLP_ENDPOINT: 'https://env.example/otel'
+      }
+
+      const standard = parseServeOptions(['--config', configPath], env)
+      expect(standard.observability).toMatchObject({
+        enabled: true,
+        exporter: 'otlp-http-json',
+        endpoint: 'https://env.example/otel/v1/traces'
+      })
+
+      const cli = parseServeOptions([
+        '--config', configPath,
+        '--observability',
+        '--observability-exporter=jsonl'
+      ], env)
+      expect(cli.observability).toMatchObject({ enabled: true, exporter: 'jsonl' })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('loads serve and context compaction settings from an explicit config file', async () => {

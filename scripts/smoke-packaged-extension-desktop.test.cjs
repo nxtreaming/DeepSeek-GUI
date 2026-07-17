@@ -12,6 +12,7 @@ const {
   EXTENSION_ID,
   PACKAGED_EXTENSION_SMOKE_SUCCESS_MARKER,
   assertPackagedSmokeChildResult,
+  createPackagedExtensionSmokeReexecEnvironment,
   installSmokeExtensionFixture,
   packagedResourceCandidates,
   resolvedPackagedResourceCandidates,
@@ -27,8 +28,10 @@ const {
   desktopApplicationEntry,
   desktopResourceCandidates,
   desktopSmokeSettings,
+  desktopSmokeWorkspaceParent,
   desktopUserDataCandidates,
   findUnexpectedPopupTargets,
+  hasWorkbenchContribution,
   isExtensionGuestTarget,
   isWorkbenchTarget,
   platformDesktopArguments,
@@ -50,6 +53,17 @@ const linuxUserNamespaceSetup = [
   'fi',
   'unshare --user --map-root-user /bin/true'
 ].join('\n')
+
+test('forces headless packaged runtime smokes onto the encrypted file-key fallback', () => {
+  const environment = createPackagedExtensionSmokeReexecEnvironment({
+    PATH: '/usr/bin',
+    KUN_DISABLE_OS_CREDENTIAL_STORE: '0'
+  })
+  assert.equal(environment.PATH, '/usr/bin')
+  assert.equal(environment.ELECTRON_RUN_AS_NODE, '1')
+  assert.equal(environment.KUN_DISABLE_OS_CREDENTIAL_STORE, '1')
+  assert.equal(environment.KUN_PACKAGED_EXTENSION_SMOKE_REEXEC, '1')
+})
 
 test('selects host-native packaged resources and never launches desktop Electron as Node', () => {
   assert.deepEqual(platformDesktopArguments('linux'), [
@@ -84,6 +98,10 @@ test('selects host-native packaged resources and never launches desktop Electron
   assert.equal(
     desktopSmokeSettings(43123, '/isolated-home/.kun/default_workspace').workspaceRoot,
     '/isolated-home/.kun/default_workspace'
+  )
+  assert.equal(
+    desktopSmokeWorkspaceParent('/source-checkout'),
+    join('/source-checkout', 'dist', '.kun-desktop-smoke')
   )
   assert.deepEqual(
     desktopUserDataCandidates({
@@ -134,6 +152,7 @@ test('selects host-native packaged resources and never launches desktop Electron
       KUN_RUNTIME_TOKEN: 'inherited-token',
       KUN_RUNTIME_PROVIDER_KIND: 'agent-sdk',
       KUN_CLAUDE_BINARY: '/tmp/claude',
+      KUN_DISABLE_OS_CREDENTIAL_STORE: '0',
       DEEPSEEK_API_KEY: 'inherited-secret',
       DEEPSEEK_GUI_STARTUP_TRACE: '1'
     },
@@ -148,6 +167,7 @@ test('selects host-native packaged resources and never launches desktop Electron
   assert.equal(isolated.HOME, '/isolated-home')
   assert.equal(isolated.NODE_ENV, 'production')
   assert.equal(isolated.KUN_PACKAGED_EXTENSION_DESKTOP_SMOKE, '1')
+  assert.equal(isolated.KUN_DISABLE_OS_CREDENTIAL_STORE, '1')
   for (const key of [
     'ELECTRON_RENDERER_URL',
     'ELECTRON_RUN_AS_NODE',
@@ -331,7 +351,10 @@ test('exports and installs the shared .kunx smoke fixture with a Chromium body m
   assert.match(sourceWebview, /data-kun-packaged-webview-smoke="ready"/)
   assert.match(sourceWebview, new RegExp(WEBVIEW_MARKER))
   assert.match(sourceWebview, /connect-src http:\/\/127\.0\.0\.1:43123/)
-  assert.equal(smokeWebviewCsp(), "default-src 'none'; style-src 'self'; connect-src 'none'")
+  assert.equal(
+    smokeWebviewCsp(),
+    "default-src 'none'; style-src 'self'; img-src 'self' data: kun-media:; media-src 'self' kun-media:; connect-src 'none'"
+  )
   assert.throws(() => smokeWebviewCsp(['https://example.com']), /explicit loopback origin/)
 })
 
@@ -400,6 +423,29 @@ test('recognizes the workbench and kun-extension guest CDP targets', () => {
     }),
     false
   )
+})
+
+test('recognizes the installed smoke view in a trusted workbench bridge snapshot', () => {
+  const snapshot = {
+    schemaVersion: 1,
+    revision: 7,
+    extensions: [{
+      id: EXTENSION_ID,
+      contributes: {
+        'views.rightSidebar': [{ id: 'smoke' }]
+      }
+    }]
+  }
+  assert.equal(
+    hasWorkbenchContribution({ ok: true, status: 200, body: JSON.stringify(snapshot) }, CONTRIBUTION_ID),
+    true
+  )
+  assert.equal(
+    hasWorkbenchContribution({ ok: true, status: 200, body: JSON.stringify(snapshot) }, 'extension:other.example/smoke'),
+    false
+  )
+  assert.equal(hasWorkbenchContribution({ ok: false, status: 503, body: '' }, CONTRIBUTION_ID), false)
+  assert.equal(hasWorkbenchContribution({ ok: true, status: 200, body: 'not-json' }, CONTRIBUTION_ID), false)
 })
 
 test('routes flattened CDP commands and rejects protocol errors', async () => {
@@ -518,6 +564,26 @@ test('fails closed unless the guest exposes only the narrow bridge and blocked b
         nested: { count: 1, enabled: true }
       }
     },
+    mediaPlaybackMode: 'ok',
+    mediaPlayback: {
+      scheme: 'kun-media:',
+      duration: 2,
+      currentTime: 0.5,
+      readyState: 4,
+      leaseId: 'media_lease_packaged_test'
+    },
+    imagePlaybackMode: 'ok',
+    imagePlayback: {
+      scheme: 'kun-media:',
+      naturalWidth: 1,
+      naturalHeight: 1,
+      leaseId: 'image_lease_packaged_test'
+    },
+    imageReleaseMode: 'ok',
+    copiedMediaUrlMode: 'blocked',
+    arbitraryLocalPathMode: 'blocked',
+    releaseMode: 'ok',
+    postReleaseMediaUrlMode: 'blocked',
     hasKunGui: false,
     hasElectron: false,
     hasIpcRenderer: false,
@@ -560,8 +626,44 @@ test('fails closed unless the guest exposes only the narrow bridge and blocked b
     /View-state round-trip failed/
   )
   assert.throws(
+    () => assertGuestSecurityResult({ ...secure, mediaPlayback: { ...secure.mediaPlayback, scheme: 'file:' } }),
+    /kun-media desktop playback\/seek failed/
+  )
+  assert.throws(
+    () => assertGuestSecurityResult({
+      ...secure,
+      imagePlayback: { ...secure.imagePlayback, naturalWidth: 0 }
+    }),
+    /kun-media desktop image playback failed/
+  )
+  assert.throws(
+    () => assertGuestSecurityResult({
+      ...secure,
+      mediaPlaybackMode: 'rejected',
+      mediaPlayback: null,
+      copiedMediaUrlMode: 'invalid-url'
+    }),
+    /kun-media desktop playback\/seek failed: rejected null/
+  )
+  assert.throws(
     () => assertGuestSecurityResult({ ...secure, fetchMode: 'allowed' }),
     /loopback fetch was not rejected by the Host filter/
+  )
+  assert.throws(
+    () => assertGuestSecurityResult({ ...secure, copiedMediaUrlMode: 'allowed' }),
+    /copied sender URL was not blocked/
+  )
+  assert.throws(
+    () => assertGuestSecurityResult({ ...secure, arbitraryLocalPathMode: 'allowed' }),
+    /arbitrary local file URL was not blocked/
+  )
+  assert.throws(
+    () => assertGuestSecurityResult({ ...secure, releaseMode: 'rejected' }),
+    /media lease release failed/
+  )
+  assert.throws(
+    () => assertGuestSecurityResult({ ...secure, postReleaseMediaUrlMode: 'allowed' }),
+    /post-release URL was not blocked/
   )
   assert.throws(() => assertGuestSecurityResult({ ...secure, popupMode: 'allowed' }), /window\.open was not blocked/)
   assert.throws(
@@ -829,9 +931,10 @@ test('every automated and local release path gates uploads behind packaged Exten
   assertSourceMarkersAfter(releaseMac, '\nsmoke_macos_extensions\n', [
     'gh release create "${TAG_NAME}"',
     'gh release upload "${tag}"',
-    'publish-r2.mjs" upload --platform mac',
-    'publish-r2.mjs" promote --tag'
+    'publish-r2.mjs" upload --platform mac'
   ])
+  assert.doesNotMatch(releaseMac, /publish-r2\.mjs" promote --tag/)
+  assert.match(releaseMac, /macOS release only uploads single-platform R2 metadata/)
 
   const releaseWin = readFileSync(join(root, 'scripts', 'release-win.sh'), 'utf8')
   assertOrderedSourceMarkers(releaseWin, [
@@ -841,12 +944,16 @@ test('every automated and local release path gates uploads behind packaged Exten
     '|| die "Windows packaged Extension Node runtime smoke failed"',
     desktopCommand,
     '|| die "Windows packaged Extension desktop Chromium smoke failed"',
-    'gh release upload "${TAG_NAME}"'
+    'gh release upload "${TAG_NAME}"',
+    'if $PUBLISH || [[ "${R2_PROMOTE}" == "true" ]]; then',
+    'npm run verify:manual-extension-release -- --tag "${TAG_NAME}" --version "${RELEASE_VERSION}"',
+    'publish-r2.mjs" promote --tag "${TAG_NAME}" --channel "${RELEASE_CHANNEL}" --platforms mac,win,linux',
+    'gh release edit "${TAG_NAME}" --draft=false'
   ])
   assertSourceMarkersAfter(releaseWin, desktopCommand, [
     'gh release upload "${TAG_NAME}"',
     'publish-r2.mjs" upload --platform win',
-    'publish-r2.mjs" promote --tag',
+    'publish-r2.mjs" promote --tag "${TAG_NAME}" --channel "${RELEASE_CHANNEL}" --platforms mac,win,linux',
     'gh release edit "${TAG_NAME}" --draft=false'
   ])
 
@@ -859,12 +966,16 @@ test('every automated and local release path gates uploads behind packaged Exten
     "Write-Err 'Windows packaged Extension Node runtime smoke failed.'",
     '& npm run smoke:packaged-extension-desktop',
     "Write-Err 'Windows packaged Extension desktop Chromium smoke failed.'",
-    '& gh release upload $TagName'
+    '& gh release upload $TagName',
+    'if ($Publish -or $PromoteR2)',
+    '& npm run verify:manual-extension-release -- --tag $TagName --version $ReleaseVersion',
+    "'scripts\\publish-r2.mjs') promote --tag $TagName --channel $ReleaseChannel --platforms mac,win,linux",
+    '& gh release edit $TagName --draft=false'
   ])
   assertSourceMarkersAfter(releaseWinPowerShell, '& npm run smoke:packaged-extension-desktop', [
     '& gh release upload $TagName',
     "'scripts\\publish-r2.mjs') upload --platform win",
-    "'scripts\\publish-r2.mjs') promote --tag",
+    "'scripts\\publish-r2.mjs') promote --tag $TagName --channel $ReleaseChannel --platforms mac,win,linux",
     '& gh release edit $TagName --draft=false'
   ])
 
@@ -882,6 +993,11 @@ test('every automated and local release path gates uploads behind packaged Exten
   assert.match(desktopSource, /Reflect\.ownKeys/)
   assert.match(desktopSource, /userGesture: true/)
   assert.match(desktopSource, /ui\.setViewState/)
+  assert.match(desktopSource, /copied kun-media URL from the workbench sender/)
+  assert.match(desktopSource, /arbitrary file URL from the extension guest/)
+  assert.match(desktopSource, /released kun-media URL from its original guest/)
+  assert.match(desktopSource, /replacement kun-extension guest for stale View Session validation/)
+  assert.match(desktopSource, /Page\.setBypassCSP/)
   assert.match(desktopSource, /waitForPortsClosed/)
 
   const appImageSource = readFileSync(join(root, 'scripts', 'smoke-packaged-extension-appimage.cjs'), 'utf8')
@@ -967,7 +1083,10 @@ function assertSourceMarkersAfter(source, priorMarker, markers) {
   const priorIndex = source.indexOf(priorMarker)
   assert.notEqual(priorIndex, -1, `missing prior source marker: ${priorMarker}`)
   for (const marker of markers) {
-    assert.ok(source.indexOf(marker) > priorIndex, `${marker} must appear after ${priorMarker}`)
+    assert.ok(
+      source.indexOf(marker, priorIndex + 1) > priorIndex,
+      `${marker} must appear after ${priorMarker}`
+    )
   }
 }
 

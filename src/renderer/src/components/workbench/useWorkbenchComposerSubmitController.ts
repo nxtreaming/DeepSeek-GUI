@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, type Dispatch, type SetStateAction } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ModelProviderModelGroup } from '@shared/kun-gui-api'
 import {
@@ -11,6 +11,10 @@ import { useChatStore } from '../../store/chat-store'
 import { providerIdForComposerModel } from '../../store/chat-store-helpers'
 import { parseClawCommand } from '@shared/claw-commands'
 import { useWriteWorkspaceStore } from '../../write/write-workspace-store'
+import {
+  captureWriteDocumentContext,
+  writeDocumentContextMatches
+} from '../../write/write-document-context'
 import type { WriteRetrievalContext } from '@shared/write-retrieval'
 import { composeWritePrompt } from '../../write/quoted-selection'
 import { resolveWriteAgentPreset } from '../../write/agent-presets'
@@ -58,13 +62,13 @@ type UseWorkbenchComposerSubmitControllerParams = {
   attachmentUploadEnabled: boolean
   buildCodeCanvasOutboundPrompt: (input: CodeCanvasOutboundPromptInput) => Promise<string>
   clearComposerAttachments: (scope?: ComposerAttachmentScope) => void
+  removeComposerAttachments: (ids: readonly string[], scope?: ComposerAttachmentScope) => void
   clearComposerFileReferences: () => void
   composerAttachments: AttachmentReference[]
   composerFileReferences: ComposerFileReference[]
   composerMode: 'plan' | 'agent'
   composerModelGroups: ModelProviderModelGroup[]
   composerReasoningEffort: ComposerReasoningEffort
-  ensureWriteThreadForWorkspace: (workspaceRoot: string) => Promise<string | null>
   getAttachmentScope: () => ComposerAttachmentScope
   handleGuiPlanCommand: (request?: string) => void | Promise<void>
   input: string
@@ -78,7 +82,7 @@ type UseWorkbenchComposerSubmitControllerParams = {
   setAttachmentUploadError: (message: string | null) => void
   setClawChannelModel: (channelId: string, model: string, providerId?: string) => Promise<void>
   setError: (message: string | null) => void
-  setInput: (value: string) => void
+  setInput: Dispatch<SetStateAction<string>>
   threads: NormalizedThread[]
   workspaceRoot: string
   appendLocalClawTurn: (userText: string, replyText: string) => void
@@ -134,13 +138,13 @@ export function useWorkbenchComposerSubmitController({
   attachmentUploadEnabled,
   buildCodeCanvasOutboundPrompt,
   clearComposerAttachments,
+  removeComposerAttachments,
   clearComposerFileReferences,
   composerAttachments,
   composerFileReferences,
   composerMode,
   composerModelGroups,
   composerReasoningEffort,
-  ensureWriteThreadForWorkspace,
   getAttachmentScope,
   handleGuiPlanCommand,
   input,
@@ -287,15 +291,94 @@ export function useWorkbenchComposerSubmitController({
     }
     const writeState = useWriteWorkspaceStore.getState()
     const writeWorkspaceRoot = writeState.workspaceRoot || workspaceRoot
+    const writeDocumentContext = captureWriteDocumentContext({
+      ...writeState,
+      workspaceRoot: writeWorkspaceRoot
+    })
+    const writeActiveFilePath = writeState.activeFilePath
+    const writeDocumentEpoch = writeState.documentEpoch
+    const writeContentRevision = writeState.contentRevision
+    const quotedSelections = writeState.quotedSelections.map((selection) => ({
+      ...selection,
+      ...(selection.rects ? { rects: selection.rects.map((rect) => ({ ...rect })) } : {})
+    }))
+    const writeContextStillMatches = (): boolean => {
+      if (useChatStore.getState().route !== 'write') return false
+      const latest = useWriteWorkspaceStore.getState()
+      if (writeDocumentContext) return writeDocumentContextMatches(latest, writeDocumentContext)
+      return (
+        normalizeWorkspaceRoot(latest.workspaceRoot || workspaceRoot) === normalizeWorkspaceRoot(writeWorkspaceRoot) &&
+        latest.activeFilePath === writeActiveFilePath &&
+        latest.documentEpoch === writeDocumentEpoch
+      )
+    }
+    const restorePrompt = (): void => {
+      // The composer state is shared across routes. Never prepend a stale
+      // Write prompt to text the user has started composing in Chat/Design.
+      if (useChatStore.getState().route !== 'write') return
+      setInput((current) => {
+        if (!v) return current
+        if (!current) return v
+        if (current.trim() === v || current.startsWith(`${v}\n\n`)) return current
+        return `${v}\n\n${current}`
+      })
+    }
+    const writeDraftStillMatches = (): boolean => {
+      const latest = useWriteWorkspaceStore.getState()
+      return (
+        writeContextStillMatches() &&
+        latest.contentRevision === writeContentRevision &&
+        latest.saveStatus === 'saved' &&
+        latest.fileContent === latest.persistedContent &&
+        latest.pendingAgentReview === null &&
+        !latest.reviewActive
+      )
+    }
+    const saveActiveDraft = async (): Promise<boolean> => {
+      if (!writeContextStillMatches()) return false
+      const beforeSave = useWriteWorkspaceStore.getState()
+      if (beforeSave.contentRevision !== writeContentRevision) return false
+      if (beforeSave.pendingAgentReview || beforeSave.reviewActive) {
+        beforeSave.setFileError(t('writeExternalChangeConflict'))
+        return false
+      }
+      // Clean read-only/truncated (or non-text) documents are safe to ask
+      // about. Their flushSave path intentionally rejects/no-ops, so avoid it.
+      // Normal text files still flush below to drain an older queued save.
+      const cleanDocument = beforeSave.fileContent === beforeSave.persistedContent
+      if (
+        cleanDocument &&
+        (beforeSave.fileTruncated || beforeSave.activeFileKind !== 'text' || !beforeSave.activeFilePath)
+      ) {
+        if (beforeSave.saveStatus !== 'saved') {
+          useWriteWorkspaceStore.setState((current) => (
+            writeContextStillMatches() &&
+            current.contentRevision === writeContentRevision &&
+            current.fileContent === current.persistedContent
+              ? { saveStatus: 'saved' }
+              : {}
+          ))
+        }
+        return writeDraftStillMatches()
+      }
+      const saved = await beforeSave.flushSave(writeWorkspaceRoot)
+      if (!saved) {
+        const latest = useWriteWorkspaceStore.getState()
+        if (writeContextStillMatches() && !latest.fileError) {
+          latest.setFileError(t('writeAssistantSaveBeforeSendFailed'))
+        }
+        return false
+      }
+      return writeDraftStillMatches()
+    }
     setInput('')
     void (async () => {
-      const threadId = await ensureWriteThreadForWorkspace(writeWorkspaceRoot)
-      if (!threadId) {
-        setInput(v)
+      if (!await saveActiveDraft()) {
+        restorePrompt()
         return
       }
       const retrievalQuery = [
-        ...writeState.quotedSelections.map((selection) => selection.text),
+        ...quotedSelections.map((selection) => selection.text),
         v
       ].join('\n\n').trim()
       let retrieval: WriteRetrievalContext | null = null
@@ -303,7 +386,7 @@ export function useWorkbenchComposerSubmitController({
         try {
           const result = await window.kunGui.retrieveWriteContext({
             workspaceRoot: writeWorkspaceRoot,
-            currentFilePath: writeState.activeFilePath ?? undefined,
+            currentFilePath: writeActiveFilePath ?? undefined,
             query: retrievalQuery,
             maxSnippets: 4,
             includeCurrentFile: true
@@ -315,6 +398,17 @@ export function useWorkbenchComposerSubmitController({
           })
         }
       }
+      if (!writeDraftStillMatches()) {
+        restorePrompt()
+        return
+      }
+      // Retrieval can take long enough for another edit to land. The revision
+      // gate above aborts in that case; otherwise this final no-op/flush check
+      // guarantees the exact captured draft is still persisted before send.
+      if (!await saveActiveDraft()) {
+        restorePrompt()
+        return
+      }
       const messageText = buildComposerDocumentContextPrompt(
         v || (documentAttachments.length > 0 ? t('composerFileOnlyPrompt') : t('composerImageOnlyPrompt')),
         documentAttachments
@@ -323,9 +417,9 @@ export function useWorkbenchComposerSubmitController({
         (preset) => preset.id === writeState.assistantAgentPresetId
       )
       const agentPersona = activeAgentPreset ? resolveWriteAgentPreset(activeAgentPreset).persona : ''
-      const prompt = composeWritePrompt(messageText, writeState.quotedSelections, {
+      const prompt = composeWritePrompt(messageText, quotedSelections, {
         workspaceRoot: writeWorkspaceRoot,
-        activeFilePath: writeState.activeFilePath,
+        activeFilePath: writeActiveFilePath,
         retrieval,
         ...(agentPersona ? { agentPersona } : {})
       })
@@ -343,21 +437,31 @@ export function useWorkbenchComposerSubmitController({
         ...(providerId ? { providerId } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(attachmentIds.length ? { attachmentIds } : {}),
-        ...(publicAttachments.length ? { attachments: publicAttachments } : {})
+        ...(publicAttachments.length ? { attachments: publicAttachments } : {}),
+        writeContext: {
+          workspaceRoot: writeWorkspaceRoot,
+          activeFilePath: writeActiveFilePath,
+          documentEpoch: writeDocumentEpoch,
+          contentRevision: writeContentRevision
+        }
       })
       if (sent) {
-        useWriteWorkspaceStore.getState().clearQuotedSelections()
-        if (attachments.length > 0) clearComposerAttachments(attachmentScope)
+        // Consume only the captured ids. Quotes/attachments added while the
+        // runtime starts remain in the composer, even if the active file moved.
+        const latest = useWriteWorkspaceStore.getState()
+        quotedSelections.forEach((selection) => latest.removeQuotedSelection(selection.id))
+        if (attachmentIds.length > 0) removeComposerAttachments(attachmentIds, attachmentScope)
+      } else {
+        restorePrompt()
       }
     })()
   }, [
     attachmentUploadEnabled,
-    clearComposerAttachments,
+    removeComposerAttachments,
     composerAttachments,
     composerMode,
     composerModelGroups,
     composerReasoningEffort,
-    ensureWriteThreadForWorkspace,
     getAttachmentScope,
     sendMessage,
     setAttachmentUploadError,

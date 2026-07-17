@@ -11,8 +11,10 @@ import {
   workspaceFileIndexCacheSizes
 } from './workspace-file-index'
 import {
+  COMPOSER_FILE_REFERENCE_DRAG_MIME,
   composerFileReferenceFromPath,
   filterWorkspaceFileMentionSuggestions,
+  parseComposerFileReferenceDragData,
   type ComposerFileReference
 } from './composer-file-references'
 
@@ -56,6 +58,42 @@ describe('composerFileReferenceFromPath', () => {
       type: 'file',
       workspaceRoot: null
     })
+  })
+
+  it('parses bounded internal drag data and rejects malformed payloads', () => {
+    const reference = {
+      path: 'C:\\repo\\docs\\plan.md',
+      relativePath: 'docs\\plan.md',
+      name: 'plan.md',
+      type: 'file' as const,
+      workspaceRoot: 'C:\\repo'
+    }
+
+    expect(COMPOSER_FILE_REFERENCE_DRAG_MIME).toBe('application/x-kun-file-reference')
+    expect(parseComposerFileReferenceDragData(JSON.stringify(reference))).toEqual({
+      path: 'C:/repo/docs/plan.md',
+      relativePath: 'docs/plan.md',
+      name: 'plan.md',
+      type: 'file',
+      workspaceRoot: 'C:/repo'
+    })
+    expect(parseComposerFileReferenceDragData(JSON.stringify(reference), 'C:/repo')).toEqual({
+      path: 'C:/repo/docs/plan.md',
+      relativePath: 'docs/plan.md',
+      name: 'plan.md',
+      type: 'file',
+      workspaceRoot: 'C:/repo'
+    })
+    expect(parseComposerFileReferenceDragData(JSON.stringify(reference), 'C:/other')).toBeNull()
+    expect(parseComposerFileReferenceDragData(JSON.stringify({
+      ...reference,
+      path: 'C:\\outside\\plan.md',
+      relativePath: '../outside/plan.md'
+    }), 'C:/repo')).toBeNull()
+    expect(parseComposerFileReferenceDragData('{bad json')).toBeNull()
+    expect(parseComposerFileReferenceDragData(JSON.stringify({ ...reference, type: 'link' }))).toBeNull()
+    expect(parseComposerFileReferenceDragData('x'.repeat(16 * 1024 + 1))).toBeNull()
+    expect(parseComposerFileReferenceDragData('界'.repeat(6 * 1024))).toBeNull()
   })
 })
 

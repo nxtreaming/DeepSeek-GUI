@@ -33,7 +33,7 @@ describe('InteractiveToolBridge', () => {
       approvalPolicy: 'always',
       sandboxMode: 'workspace-write',
       signal: new AbortController().signal
-    })).resolves.toBe('allow')
+    })).resolves.toEqual({ decision: 'allow' })
     expect(immediatelyAllowed).toBe(true)
   })
 

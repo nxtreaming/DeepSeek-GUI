@@ -1,6 +1,11 @@
 import type { ReviewTarget } from '../agent/types'
 import { getProvider } from '../agent/registry'
 import { rendererRuntimeClient } from '../agent/runtime-client'
+import {
+  showWorkspaceMissingDialog,
+  workspaceDirectoryExists,
+  workspaceMissingError
+} from '../lib/workspace-availability'
 import i18n from '../i18n'
 import { applyTheme, applyUiFontScale } from '../lib/apply-theme'
 import { formatWorkspacePickerError } from '../lib/format-workspace-picker-error'
@@ -24,13 +29,23 @@ import {
   saveThreadWorktreeRegistry
 } from '../lib/thread-worktree-registry'
 import { workspaceLabelFromPath } from '../lib/workspace-label'
-import { isInternalTemporaryWorkspace, normalizeWorkspaceRoot } from '../lib/workspace-path'
+import {
+  isInternalTemporaryWorkspace,
+  normalizeWorkspaceRoot,
+  workspaceRootScopeKey
+} from '../lib/workspace-path'
 import {
   buildClawRuntimePrompt,
   buildCodeRuntimePrompt,
   getActiveAgentApiKey
 } from '@shared/app-settings'
-import type { ChatState, ChatStoreGet, ChatStoreSet } from './chat-store-types'
+import type {
+  ChatState,
+  ChatStoreGet,
+  ChatStoreSet,
+  WriteAssistantMessageContext
+} from './chat-store-types'
+import { canGuideQueuedMessage } from './queued-message-guidance'
 import {
   accountIdForComposerSelection,
   activeClawChannel,
@@ -67,9 +82,11 @@ import {
   pruneWriteThreadRegistry,
   readWriteThreadRegistry,
   saveWriteThreadRegistry,
+  writeFileKey,
   writeThreadBelongsToWorkspace,
   writeWorkspaceForThreadId
 } from '../write/write-thread-registry'
+import { useWriteWorkspaceStore } from '../write/write-workspace-store'
 import {
   clearBusyWatchdog,
   resetBusyRecoveryAttempts,
@@ -104,6 +121,7 @@ import {
   subscribeThreadEventsWithRecovery
 } from './chat-store-thread-action-helpers'
 import { GitCheckpointAvailabilityCache } from '../lib/git-checkpoint-availability'
+import type { ComposerContextAttachment } from '@kun/extension-api'
 
 type SseAbortRef = { current: AbortController | null }
 
@@ -114,11 +132,58 @@ type StoreActionContext = {
 }
 
 let drainingQueuedMessages = false
+const guidingQueuedMessageIds = new Set<string>()
 const checkpointGitAvailability = new GitCheckpointAvailabilityCache()
+
+function activeChatWorkspaceRoot(state: ChatState): string {
+  const activeThread = state.activeThreadId
+    ? state.threads.find((thread) => thread.id === state.activeThreadId)
+    : undefined
+  return activeThread?.workspace?.trim() || state.workspaceRoot?.trim() || ''
+}
+
+function pendingComposerContexts(state: ChatState): ComposerContextAttachment[] {
+  if (state.route !== 'chat') return []
+  const workspaceRoot = activeChatWorkspaceRoot(state)
+  return state.extensionComposerContexts
+    .filter((event) => workspaceRootScopeKey(event.workspaceRoot) === workspaceRootScopeKey(workspaceRoot))
+    .map((event) => event.attachment)
+}
+
+function withoutConsumedComposerContexts(
+  state: ChatState,
+  consumed: readonly ComposerContextAttachment[]
+): ChatState['extensionComposerContexts'] {
+  if (consumed.length === 0) return state.extensionComposerContexts
+  const consumedRevisions = new Set(consumed.map((attachment) => [
+    attachment.attachmentId,
+    attachment.revision,
+    attachment.generation
+  ].join(':')))
+  return state.extensionComposerContexts.filter((event) => !consumedRevisions.has([
+    event.attachment.attachmentId,
+    event.attachment.revision,
+    event.attachment.generation
+  ].join(':')))
+}
+
+function activeWriteMessageContextMatches(context: WriteAssistantMessageContext): boolean {
+  const state = useWriteWorkspaceStore.getState()
+  return (
+    writeFileKey(state.workspaceRoot) === writeFileKey(context.workspaceRoot) &&
+    writeFileKey(state.activeFilePath) === writeFileKey(context.activeFilePath) &&
+    state.documentEpoch === context.documentEpoch &&
+    state.contentRevision === context.contentRevision &&
+    state.saveStatus === 'saved' &&
+    state.fileContent === state.persistedContent &&
+    state.pendingAgentReview === null &&
+    !state.reviewActive
+  )
+}
 
 export function createThreadActions(
   { set, get, sseAbortRef }: StoreActionContext
-): Pick<ChatState, 'createThread' | 'createConversation' | 'recoverActiveTurn' | 'selectThread' | 'subscribeThreadEventsLive' | 'drainQueuedMessages' | 'removeQueuedMessage' | 'sendMessage' | 'reviewActiveThread'> {
+): Pick<ChatState, 'createThread' | 'createConversation' | 'recoverActiveTurn' | 'selectThread' | 'subscribeThreadEventsLive' | 'drainQueuedMessages' | 'removeQueuedMessage' | 'guideQueuedMessage' | 'sendMessage' | 'reviewActiveThread'> {
   return {
   createThread: async (options = {}) => {
     if (get().runtimeConnection !== 'ready') {
@@ -182,6 +247,11 @@ export function createThreadActions(
         normalizeWorkspaceRoot(settings.workspaceRoot)
       if (!workspaceRoot) {
         await get().chooseWorkspace({ createThreadAfter: true })
+        return
+      }
+      if (!(await workspaceDirectoryExists(workspaceRoot))) {
+        set({ error: workspaceMissingError() })
+        await showWorkspaceMissingDialog(workspaceRoot)
         return
       }
       const codeWorkspaceRoots = rememberCodeWorkspaceRoots(get().codeWorkspaceRoots, [workspaceRoot])
@@ -606,21 +676,109 @@ export function createThreadActions(
       queuedMessages: s.queuedMessages.filter((message) => message.id !== id)
     })),
 
+  guideQueuedMessage: async (id) => {
+    if (guidingQueuedMessageIds.has(id)) return false
+    const state = get()
+    const message = state.queuedMessages.find((candidate) => candidate.id === id)
+    if (!message) return false
+    if (!canGuideQueuedMessage(message)) {
+      set({ error: i18n.t('common:guideQueuedMessageTextOnly') })
+      return false
+    }
+    if (!state.busy || !state.activeThreadId || !state.currentTurnId) {
+      set({ error: i18n.t('common:guideQueuedMessageNoActiveTurn') })
+      if (!state.busy) void get().drainQueuedMessages()
+      return false
+    }
+    const provider = getProvider()
+    if (typeof provider.steerUserMessage !== 'function') {
+      set({ error: i18n.t('common:guideQueuedMessageUnsupported') })
+      return false
+    }
+
+    guidingQueuedMessageIds.add(id)
+    try {
+      await provider.steerUserMessage(
+        state.activeThreadId,
+        state.currentTurnId,
+        message.text,
+        message.displayText ? { displayText: message.displayText } : undefined
+      )
+      set((current) => ({
+        queuedMessages: current.queuedMessages.filter((candidate) => candidate.id !== id),
+        error: null
+      }))
+      return true
+    } catch (error) {
+      const messageText = formatRuntimeError(error)
+      set({
+        error: i18n.t('common:guideQueuedMessageFailed', { message: messageText })
+      })
+      if (!get().busy) void get().drainQueuedMessages()
+      return false
+    } finally {
+      guidingQueuedMessageIds.delete(id)
+    }
+  },
+
   sendMessage: async (text, mode, overrides) => {
     const trimmedText = text.trim()
     if (!trimmedText) return false
+    const queued = overrides?.queued
+    let writeContext = queued?.writeContext ?? overrides?.writeContext
+    const requireActiveWriteContext = Boolean(writeContext && !queued)
+    const activeWriteContextIsValid = (): boolean => Boolean(
+      !writeContext ||
+      !requireActiveWriteContext ||
+      (get().route === 'write' && activeWriteMessageContextMatches(writeContext))
+    )
+    if (!activeWriteContextIsValid()) return false
     if (get().runtimeConnection !== 'ready') {
       set({ error: i18n.t('common:runtimeActionNeedsConnection') })
       return false
     }
+    if (get().route !== 'claw') {
+      const state = get()
+      const activeThread = state.activeThreadId
+        ? state.threads.find((thread) => thread.id === state.activeThreadId) ?? null
+        : null
+      let workspaceRoot = writeContext
+        ? normalizeWorkspaceRoot(writeContext.workspaceRoot)
+        : state.route === 'write'
+          ? await readActiveWriteWorkspace(state.workspaceRoot)
+          : normalizeWorkspaceRoot(activeThread?.workspace)
+      if (!activeWriteContextIsValid()) return false
+      if (!workspaceRoot) {
+        workspaceRoot = normalizeWorkspaceRoot((await rendererRuntimeClient.getSettings()).workspaceRoot)
+        if (!activeWriteContextIsValid()) return false
+      }
+      if (workspaceRoot && !(await workspaceDirectoryExists(workspaceRoot))) {
+        set({ error: workspaceMissingError() })
+        await showWorkspaceMissingDialog(workspaceRoot)
+        return false
+      }
+      if (!activeWriteContextIsValid()) return false
+    }
     const p = getProvider()
-    if (get().route === 'write') {
-      const writeThreadId = await get().ensureWriteThreadForWorkspace()
+    if (writeContext || get().route === 'write') {
+      const writeThreadId = await get().ensureWriteThreadForWorkspace(
+        writeContext?.workspaceRoot,
+        writeContext ? writeContext.activeFilePath ?? '' : undefined
+      )
       if (!writeThreadId) return false
+      if (writeContext?.threadId && writeThreadId !== writeContext.threadId) return false
+      // ensureWriteThreadForWorkspace may await selectThread. If the user
+      // selects another conversation before it resolves, never fall through to
+      // the provider with that newer activeThreadId.
+      if (get().activeThreadId !== writeThreadId) return false
+      if (writeContext && !writeContext.threadId) {
+        writeContext = { ...writeContext, threadId: writeThreadId }
+      }
+      if (!activeWriteContextIsValid()) return false
     }
     const hasPendingActiveTurn = threadHasPendingRuntimeWork(get().blocks)
     if (get().busy || hasPendingActiveTurn) {
-      if (overrides?.guiPlan) {
+      if (overrides?.guiPlan || writeContext) {
         set({ error: i18n.t('common:composerQueuePlaceholder') })
         return false
       }
@@ -651,6 +809,9 @@ export function createThreadActions(
         reference.relativePath.trim().length > 0 &&
         reference.name.trim().length > 0
       )
+      const composerContexts = get().route === 'chat'
+        ? overrides?.composerContexts ?? pendingComposerContexts(get())
+        : []
       set((s) => ({
         queuedMessages: [
           ...s.queuedMessages,
@@ -668,11 +829,14 @@ export function createThreadActions(
             ...(overrides?.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
             ...(overrides?.guiDesignMode ? { guiDesignMode: true } : {}),
             ...(overrides?.guiDesignArtifact ? { guiDesignArtifact: overrides.guiDesignArtifact } : {}),
+            ...(writeContext ? { writeContext } : {}),
             ...(attachmentIds?.length ? { attachmentIds } : {}),
             ...(attachments?.length ? { attachments } : {}),
-            ...(fileReferences?.length ? { fileReferences } : {})
+            ...(fileReferences?.length ? { fileReferences } : {}),
+            ...(composerContexts.length ? { composerContexts } : {})
           }
         ],
+        extensionComposerContexts: withoutConsumedComposerContexts(s, composerContexts),
         error: null
       }))
       // UI/runtime can briefly drift (busy=false while runtime still has an active turn).
@@ -683,7 +847,6 @@ export function createThreadActions(
       return true
     }
     const now = Date.now()
-    const queued = overrides?.queued
     const userBlockId = queued?.id ?? `u-${now}`
     const attachmentIds =
       queued?.attachmentIds ??
@@ -701,6 +864,9 @@ export function createThreadActions(
         reference.name.trim().length > 0
       ) ??
       []
+    const composerContexts = queued?.composerContexts ?? (get().route === 'chat'
+      ? overrides?.composerContexts ?? pendingComposerContexts(get())
+      : [])
     let activeThreadId = get().activeThreadId
     const displayText = queued?.displayText ?? overrides?.displayText?.trim() ?? trimmedText
     const userDisplayText = displayText !== trimmedText ? displayText : undefined
@@ -751,7 +917,7 @@ export function createThreadActions(
           createdAt: new Date(now).toISOString(),
           text: displayText,
           ...(userModelChip ? { modelLabel: userModelChip } : {}),
-          ...(userDisplayText || guiDesignCanvas || guiDesignMode || attachmentIds.length || attachments.length || fileReferences.length
+          ...(userDisplayText || guiDesignCanvas || guiDesignMode || attachmentIds.length || attachments.length || fileReferences.length || composerContexts.length
             ? {
                 meta: {
                   ...(userDisplayText ? { displayText: userDisplayText } : {}),
@@ -759,7 +925,8 @@ export function createThreadActions(
                   ...(guiDesignMode ? { guiDesignMode: true } : {}),
                   ...(attachmentIds.length ? { attachmentIds } : {}),
                   ...(attachments.length ? { attachments } : {}),
-                  ...(fileReferences.length ? { fileReferences } : {})
+                  ...(fileReferences.length ? { fileReferences } : {}),
+                  ...(composerContexts.length ? { composerContexts } : {})
                 }
               }
             : {})
@@ -937,8 +1104,14 @@ export function createThreadActions(
           : {}),
         ...(attachmentIds.length ? { attachmentIds } : {}),
         ...(workspaceCheckpointId ? { workspaceCheckpointId } : {}),
-        ...(fileReferences.length ? { fileReferences } : {})
+        ...(fileReferences.length ? { fileReferences } : {}),
+        ...(composerContexts.length ? { composerContexts } : {})
       })
+      if (!queued && composerContexts.length > 0) {
+        set((state) => ({
+          extensionComposerContexts: withoutConsumedComposerContexts(state, composerContexts)
+        }))
+      }
       // Mirror the composer model selection against the runtime's stable
       // user_message item id so the badge survives page refresh / thread
       // re-selection. The runtime itself doesn't persist per-turn metadata.

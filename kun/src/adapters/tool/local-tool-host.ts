@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type {
   ToolHost,
   ToolHostContext,
@@ -207,7 +208,7 @@ export class LocalToolHost implements ToolHost {
     const needsApproval = tool.requiresExplicitApproval ||
       (!preHooks.autoApproved && this.requiresApproval(tool, activeCall, context))
     if (needsApproval) {
-      const approvalId = `appr_${context.threadId}_${context.turnId}_${activeCall.callId}`
+      const approvalId = `appr_${randomUUID().replaceAll('-', '')}`
       const approval: ApprovalRequest = createApprovalRequest({
         id: approvalId,
         threadId: context.threadId,
@@ -215,16 +216,28 @@ export class LocalToolHost implements ToolHost {
         toolName: activeCall.toolName,
         summary: this.buildApprovalSummary(activeCall)
       })
-      const decision = await context.awaitApproval(approval)
+      const resolution = await context.awaitApproval(approval)
+      const decision = typeof resolution === 'string' ? resolution : resolution.decision
       if (decision !== 'allow') {
+        const reason = typeof resolution === 'string' ? undefined : resolution.reason
         return {
-          item: this.errorToolResult(
-            context,
-            activeCall,
-            tool,
-            'Tool call was denied by the approval policy or user.',
-            'approval_denied'
-          ),
+          item: makeToolResultItem({
+            id: `item_${activeCall.callId}`,
+            turnId: context.turnId,
+            threadId: context.threadId,
+            callId: activeCall.callId,
+            toolName: activeCall.toolName,
+            toolKind: activeCall.toolKind ?? tool.toolKind,
+            output: {
+              code: 'approval_denied',
+              error: reason
+                ? `User denied approval for ${activeCall.toolName}: ${reason}`
+                : `User denied approval for ${activeCall.toolName}`,
+              approvalId,
+              ...(reason ? { reason } : {})
+            },
+            isError: true
+          }),
           approved: false
         }
       }

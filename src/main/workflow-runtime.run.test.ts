@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   defaultClawSettings,
   defaultDesignSettings,
@@ -20,6 +23,8 @@ import {
   type WorkflowV1
 } from '../shared/app-settings'
 import { createWorkflowRuntime } from './workflow-runtime'
+
+let workflowWorkspaceRoot = ''
 
 // Loose fixture builders — normalizeWorkflow fills name/position/disabled and
 // per-kind config defaults at runtime, so tests pass partial nodes. The single
@@ -51,7 +56,7 @@ function settingsWithWorkflows(workflows: WorkflowV1[], modules: WorkflowCustomM
     chatContentMaxWidthPx: 896,
     provider: defaultModelProviderSettings(),
     agents: { kun: { ...defaultKunRuntimeSettings(), model: 'test-model', apiKey: 'test-key' } },
-    workspaceRoot: '/tmp/workflow-workspace',
+    workspaceRoot: workflowWorkspaceRoot,
     conversationWorkspaceRoot: '~/Documents/Kun',
     log: { enabled: true, retentionDays: 7 },
     checkpointCleanup: { enabled: false, intervalDays: 3 },
@@ -101,8 +106,16 @@ function requireOk(result: WorkflowRunResult): string {
 }
 
 describe('WorkflowRuntime end-to-end execution', () => {
+  beforeEach(() => {
+    workflowWorkspaceRoot = mkdtempSync(join(tmpdir(), 'kun-workflow-run-'))
+  })
+
   afterEach(() => {
     vi.unstubAllGlobals()
+    if (workflowWorkspaceRoot) {
+      rmSync(workflowWorkspaceRoot, { recursive: true, force: true })
+      workflowWorkspaceRoot = ''
+    }
   })
 
   it('runs trigger → AI → condition(true) → delay and skips the false branch', async () => {

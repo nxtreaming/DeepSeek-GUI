@@ -62,6 +62,20 @@ class MemoryStorage implements BrowserStorageLike {
   }
 }
 
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (reason?: unknown) => void
+} {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 function thread(id: string, goal: ThreadGoal | null = null): NormalizedThread {
   return {
     id,
@@ -627,6 +641,39 @@ describe('chat-store-maintenance-actions goal actions', () => {
       true
     )
     expect(state.blocks[0]).toMatchObject({ status: 'pending' })
+  })
+
+  it('does not overwrite an SSE-expired approval when submission resolves later', async () => {
+    const submission = deferred<'submitted' | 'cancelled'>()
+    const { actions, provider, state } = buildHarness()
+    provider.submitApprovalDecision.mockReturnValueOnce(submission.promise)
+    state.blocks = [{
+      kind: 'approval',
+      id: 'approval-expired',
+      approvalId: 'appr_expired',
+      summary: 'Approve command',
+      status: 'pending'
+    }]
+
+    const resolving = actions.resolveApproval('approval-expired', 'allow')
+    await vi.waitFor(() => expect(state.blocks[0]).toMatchObject({ status: 'submitting' }))
+
+    state.blocks = state.blocks.map((block) =>
+      block.id === 'approval-expired' && block.kind === 'approval'
+        ? {
+            ...block,
+            status: 'expired',
+            errorMessage: 'turn aborted while awaiting approval'
+          }
+        : block
+    )
+    submission.resolve('submitted')
+    await resolving
+
+    expect(state.blocks[0]).toMatchObject({
+      status: 'expired',
+      errorMessage: 'turn aborted while awaiting approval'
+    })
   })
 
   it('settles local runtime work before the backend interrupt resolves', async () => {

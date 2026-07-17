@@ -480,6 +480,34 @@ html[data-theme='dark'] .ds-code-sidebar {
   background: var(--ds-card-strong);
 }
 
+.ds-code-sidebar-tab:focus-within {
+  outline: 2px solid color-mix(in srgb, var(--ds-accent) 58%, transparent);
+  outline-offset: 1px;
+}
+
+.ds-code-sidebar-tab-selector {
+  display: inline-flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 0.55rem;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.ds-code-sidebar-tab-selector:focus {
+  outline: none;
+}
+
+.ds-code-sidebar-tab-selector:disabled {
+  cursor: default;
+}
+
 .ds-code-sidebar-tab:disabled {
   cursor: default;
   opacity: 0.68;

@@ -617,14 +617,15 @@ html[data-ui-plugin-presentation='on'] .ds-chat-stage {
 }
 
 html[data-ui-plugin-presentation='on'] .ds-ui-plugin-decor-layer {
-  /* Atmosphere and frame ornaments must stay below Kun's z-3 content layer.
-   * The character itself remains above content inside its reserved right rail. */
+  /* Every plugin-owned visual stays below Kun's z-3 content layer. */
   z-index: 1;
   display: block;
 }
 
 html[data-ui-plugin-presentation='on'] .ds-ui-plugin-character-layer {
-  z-index: 5;
+  /* The portrait remains visible through the stage's empty right rail, while
+   * messages, the Composer, terminal, and other Host UI always paint above it. */
+  z-index: 2;
   display: flex;
   inset:
     4.75rem
@@ -911,7 +912,7 @@ html[data-ui-plugin-character-frame='ticket'] .ds-ui-plugin-decor-layer::before 
  * scrim protects the left conversation column without whitening the portrait. */
 html[data-ui-plugin-presentation='on'][data-ui-plugin-readability-scrim='opposite-character']
   .ds-ui-plugin-readability-scrim {
-  z-index: 2;
+  z-index: 1;
   display: block;
   background: linear-gradient(
     90deg,
@@ -924,7 +925,7 @@ html[data-ui-plugin-presentation='on'][data-ui-plugin-readability-scrim='opposit
 
 html[data-ui-plugin-presentation='on'][data-ui-plugin-readability-scrim='full']
   .ds-ui-plugin-readability-scrim {
-  z-index: 2;
+  z-index: 1;
   display: block;
   background: color-mix(in srgb, var(--kun-ui-plugin-host-bg-color) 78%, transparent);
 }

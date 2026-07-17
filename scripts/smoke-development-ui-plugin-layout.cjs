@@ -481,7 +481,6 @@ async function readLayoutSnapshot(workbench) {
       excess: element ? Math.max(0, element.scrollWidth - element.clientWidth) : 0
     })
     const character = document.querySelector('.ds-ui-plugin-character')
-    const characterLayer = document.querySelector('.ds-ui-plugin-character-layer')
     const stage = document.querySelector('.ds-chat-stage')
     const composer = document.querySelector('.ds-floating-composer')
     const cdpStyle = document.querySelector('#kun-ui-plugin-theme-cdp')
@@ -514,9 +513,6 @@ async function readLayoutSnapshot(workbench) {
           : 'missing',
         visible: character instanceof HTMLElement
           ? character.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
-          : false,
-        topmostAtCenter: character instanceof HTMLElement && characterLayer instanceof HTMLElement
-          ? characterIsTopmostAtCenter(character, characterLayer)
           : false
       },
       stage: elementSnapshot('.ds-chat-stage'),
@@ -546,21 +542,6 @@ async function readLayoutSnapshot(workbench) {
 
     function round(value) {
       return Math.round(value * 100) / 100
-    }
-
-    function characterIsTopmostAtCenter(image, layer) {
-      const bounds = image.getBoundingClientRect()
-      const previousImagePointerEvents = image.style.pointerEvents
-      const previousLayerPointerEvents = layer.style.pointerEvents
-      image.style.pointerEvents = 'auto'
-      layer.style.pointerEvents = 'auto'
-      const topmost = document.elementFromPoint(
-        bounds.left + bounds.width / 2,
-        bounds.top + bounds.height / 2
-      )
-      image.style.pointerEvents = previousImagePointerEvents
-      layer.style.pointerEvents = previousLayerPointerEvents
-      return topmost === image
     }
 
     function elementOwnsTopmostAtCenter(element) {
@@ -594,9 +575,6 @@ function assertWidePresentation(id, snapshot) {
   if (!snapshot.character.visible || !hasArea(snapshot.character.rect)) {
     throw new Error(`${id}: portrait is not visible in the wide Kun workbench`)
   }
-  if (!snapshot.character.topmostAtCenter) {
-    throw new Error(`${id}: portrait is geometrically visible but occluded at its center`)
-  }
   const reserve = snapshot.attributes['data-ui-plugin-content-reserve']
   if (
     reserve !== 'none' &&
@@ -608,17 +586,14 @@ function assertWidePresentation(id, snapshot) {
     throw new Error(`${id}: character layer is hidden in the wide Kun workbench`)
   }
   const contentZIndex = numericZIndex(snapshot.content.stageContent.style?.zIndex)
-  for (const name of ['decor', 'scrim']) {
-    const layer = snapshot.layers[name]
+  for (const [name, layer] of Object.entries(snapshot.layers)) {
     const layerZIndex = numericZIndex(layer.style?.zIndex)
     if (layerZIndex === null || contentZIndex === null || layerZIndex >= contentZIndex) {
       throw new Error(
-        `${id}: ${name} z-index ${layer.style?.zIndex ?? 'missing'} must stay below ` +
+        `${id}: ${name} presentation z-index ${layer.style?.zIndex ?? 'missing'} must stay below ` +
         `Kun content z-index ${snapshot.content.stageContent.style?.zIndex ?? 'missing'}`
       )
     }
-  }
-  for (const [name, layer] of Object.entries(snapshot.layers)) {
     if (layer.style?.pointerEvents !== 'none') {
       throw new Error(`${id}: ${name} presentation layer can intercept pointer input`)
     }
